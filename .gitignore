@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 仮想環境（デプロイ先で requirements.txt から再生成）
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 秘密情報（パスワード等）。example のみコミットする
+.streamlit/secrets.toml
+
+# ローカル検証用に取得した業績データ（コミットしない）
+*.xlsx

@@ -1,0 +1,65 @@
+# 業績書式プリセット（科研費がベース、提出先により切替・編集可）。
+#
+# 利用可能なプレースホルダ（種別により有無あり。欠損は空に置換され、
+# 余分な区切り記号は自動圧縮される）:
+#   {authors} {title} {year} {date}
+#   {journal} {journal_abbr} {volume} {issue} {pages} {doi}        … 論文/著書
+#   {book_title} {review_title} {chapter} {editor} {publisher} {isbn} {issn}
+#   {conference} {symposium} {invited} {venue} {presentation_type} {scope}  … 発表
+#   {awarded_study} {organization}                                 … 受賞
+#   {media_type} {media_name} {link}                              … 広報
+#
+# 各プリセットの任意キー:
+#   pattern    : 1件の整形テンプレート（必須）
+#   author_sep : 著者区切り（既定 ", "）
+#   sort       : "date_desc" | "date_asc"（既定 date_desc）
+#   group_by   : "fiscal_year" で年度見出しを付与
+#   numbering  : true で連番付与
+
+paper:
+  科研費:
+    pattern: "{authors}. {title}. {journal_abbr}. {year};{volume}({issue}):{pages}. {doi}"
+    author_sep: ", "
+    sort: date_desc
+  業績一覧（年度別・番号付き）:
+    pattern: "{authors}: {title}. {journal} {volume}({issue}): {pages}, {year}. {doi}"
+    author_sep: ", "
+    group_by: fiscal_year
+    numbering: true
+    sort: date_desc
+
+book:
+  科研費:
+    pattern: "{authors}. {review_title} {book_title}（{editor} 編）. {publisher}; {year}. {pages}. {isbn}"
+    author_sep: ", "
+    sort: date_desc
+
+presentation:
+  科研費:
+    pattern: "{authors}. {title}. {conference}, {venue}, {year}.（{presentation_type}{invited}）"
+    author_sep: ", "
+    sort: date_desc
+  業績一覧（年度別・番号付き）:
+    pattern: "{authors}: {title}. {conference}, {venue} ({year})."
+    author_sep: ", "
+    group_by: fiscal_year
+    numbering: true
+    sort: date_desc
+
+award:
+  科研費:
+    pattern: "{authors}. {title}（{organization}）. {year}. {awarded_study}"
+    author_sep: ", "
+    sort: date_desc
+
+outreach:
+  科研費:
+    pattern: "{authors}. {title}. {venue}, {year}."
+    author_sep: ", "
+    sort: date_desc
+
+publicity:
+  科研費:
+    pattern: "{title}（{media_name}, {media_type}）. {year}. {link}"
+    author_sep: ", "
+    sort: date_desc
