@@ -2,6 +2,7 @@
 
 Google Spreadsheet（リンク共有・閲覧可）の業績を、著者・年度・種別で絞り込み、
 提出先に応じた書式（科研費ベース・編集可）で整形してコピーできるようにする。
+UI は日英切り替え対応。太字・斜体の指定も可能。
 """
 
 from __future__ import annotations
@@ -22,45 +23,21 @@ from publication_summarizer import (
     render_records,
 )
 from publication_summarizer.filters import active_members
+from publication_summarizer.i18n import (
+    LANGUAGES,
+    PLACEHOLDER_LABELS,
+    ph_label,
+    preset_label,
+    rt_label,
+    tr,
+)
 from publication_summarizer.loader import load_roster_sheet, load_workbook_bytes
 from publication_summarizer.schema import SHEET_SPECS
 
-st.set_page_config(page_title="研究業績サマライザー", layout="wide")
+st.set_page_config(page_title="研究業績サマライザー / Publication Summarizer", layout="wide")
 
 NUMERIC_BY_TYPE = {s.rtype: s.numeric_fields for s in SHEET_SPECS}
 COLS_BY_TYPE = {s.rtype: list(s.cols.keys()) for s in SHEET_SPECS}
-
-# 書式の差し込み項目（プレースホルダ）の日本語ラベル。
-PLACEHOLDER_JA: dict[str, str] = {
-    "authors": "著者",
-    "title": "タイトル",
-    "year": "発行年（西暦）",
-    "date": "日付（年月日）",
-    "journal": "雑誌名（正式）",
-    "journal_abbr": "雑誌名（略称）",
-    "volume": "巻",
-    "issue": "号",
-    "pages": "ページ",
-    "doi": "DOI",
-    "book_title": "本・雑誌タイトル",
-    "review_title": "総説タイトル",
-    "chapter": "担当章",
-    "editor": "編者",
-    "publisher": "出版社",
-    "isbn": "ISBN",
-    "issn": "ISSN",
-    "conference": "学会・イベント名",
-    "symposium": "シンポジウム名",
-    "invited": "招待（〇/×）",
-    "venue": "会場",
-    "presentation_type": "発表形態",
-    "scope": "国内/国際",
-    "awarded_study": "対象研究",
-    "organization": "授与機関",
-    "media_type": "メディア種別",
-    "media_name": "メディア名",
-    "link": "リンク",
-}
 
 
 @st.cache_data(ttl=600, show_spinner="スプレッドシートを取得中…")
@@ -76,110 +53,104 @@ def load_all(url_or_id: str):
     return df, members
 
 
-def check_password() -> None:
-    """限定公開用の簡易パスワードゲート。
-
-    `st.secrets["app_password"]` が設定されている場合のみ認証を要求する。
-    未設定（ローカル開発など）のときは素通りする。
-    """
+def check_password(lang: str) -> None:
+    """限定公開用の簡易パスワードゲート（secrets 未設定なら素通り）。"""
     try:
         expected = st.secrets["app_password"]
-    except Exception:  # noqa: BLE001  # secrets 未設定 → 制限なし
+    except Exception:  # noqa: BLE001
         return
     if not expected or st.session_state.get("authed"):
         return
-    pw = st.text_input("パスワード", type="password", help="研究室で共有されたパスワードを入力してください。")
+    pw = st.text_input(tr("pw_label", lang), type="password", help=tr("pw_help", lang))
     if pw == "":
         st.stop()
     if pw == expected:
         st.session_state["authed"] = True
         st.rerun()
-    st.error("パスワードが違います。")
+    st.error(tr("pw_error", lang))
     st.stop()
 
 
-def placeholder_legend(rtype: str) -> str:
-    """その種別で使える差し込み項目の凡例（Markdown）を作る。"""
-    available = ["authors", "title", "year", "date"] + [
-        c for c in COLS_BY_TYPE.get(rtype, []) if c in PLACEHOLDER_JA
+def style_fields_for(rtype: str) -> list[str]:
+    """その種別で太字／斜体に指定できる項目（論理キー）の一覧。"""
+    keys = ["authors", "title", "year", "date"] + [
+        c for c in COLS_BY_TYPE.get(rtype, []) if c in PLACEHOLDER_LABELS
     ]
-    seen, lines = set(), []
-    for key in available:
-        if key in seen or key not in PLACEHOLDER_JA:
-            continue
-        seen.add(key)
-        lines.append(f"- `{{{key}}}` … {PLACEHOLDER_JA[key]}")
-    return "\n".join(lines)
+    seen, out = set(), []
+    for k in keys:
+        if k not in seen and k in PLACEHOLDER_LABELS:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def placeholder_legend(rtype: str, lang: str) -> str:
+    """その種別で使える差し込み項目の凡例（Markdown）。"""
+    return "\n".join(
+        f"- `{{{k}}}` … {ph_label(k, lang)}" for k in style_fields_for(rtype)
+    )
 
 
 def main() -> None:
-    st.title("📚 研究業績サマライザー")
-    check_password()
-    st.caption("業績を絞り込み、提出先の書式に整えてコピーできます。各セクションのテキスト枠の右上 📋 でコピー。")
+    # ── 言語選択（最初に決める）──────────────────────────────
+    with st.sidebar:
+        lang_choice = st.radio(
+            "言語 / Language", list(LANGUAGES), horizontal=True, key="lang"
+        )
+    lang = LANGUAGES[lang_choice]
+
+    st.title(tr("app_title", lang))
+    check_password(lang)
+    st.caption(tr("intro", lang))
 
     templates = load_templates()
-    preset_names = sorted({p for t in templates.values() for p in t})
+    preset_keys = sorted({p for t in templates.values() for p in t})
 
-    # ── サイドバー：入力とフィルタ ─────────────────────────────
+    # ── サイドバー：データソース ─────────────────────────────
     with st.sidebar:
-        st.header("データソース")
-        url = st.text_input(
-            "スプレッドシート URL または ID",
-            value=DEFAULT_SHEET_ID,
-            help="「リンクを知っている全員が閲覧可」に設定してください。",
-        )
-        if st.button("🔄 再読み込み（キャッシュ更新）"):
+        st.header(tr("sb_datasource", lang))
+        url = st.text_input(tr("url_label", lang), value=DEFAULT_SHEET_ID, help=tr("url_help", lang))
+        if st.button(tr("reload_btn", lang)):
             st.cache_data.clear()
 
     try:
         df, members = load_all(url)
     except Exception as exc:  # noqa: BLE001
-        st.error(f"読み込みに失敗しました: {exc}\n\nシートの共有設定（閲覧可）と URL を確認してください。")
+        st.error(tr("load_error", lang).format(exc=exc))
         st.stop()
 
     if df.empty:
-        st.warning("業績データが見つかりませんでした。シート構成を確認してください。")
+        st.warning(tr("no_data_warn", lang))
         st.stop()
 
+    # ── サイドバー：絞り込み ─────────────────────────────────
     with st.sidebar:
-        st.header("絞り込み")
-        type_labels = {RECORD_TYPES[t]: t for t in RECORD_TYPES if t in set(df["type"])}
-        selected_labels = st.multiselect(
-            "業績種別", list(type_labels), default=list(type_labels)
-        )
+        st.header(tr("sb_filter", lang))
+        type_labels = {rt_label(t, lang): t for t in RECORD_TYPES if t in set(df["type"])}
+        selected_labels = st.multiselect(tr("type_label", lang), list(type_labels), default=list(type_labels))
         selected_types = [type_labels[l] for l in selected_labels]
 
-        threshold = st.slider(
-            "著者名の一致のゆるさ", 70, 100, 85,
-            help="高いほど厳密（同名でも別人扱いしやすい）、低いほどゆるく拾います。通常は既定のままでOK。",
-        )
+        threshold = st.slider(tr("author_loose_label", lang), 70, 100, 85, help=tr("author_loose_help", lang))
         matcher = AuthorMatcher(members, threshold=threshold)
 
-        # 業績が1件以上ある人だけを著者リストに出す。
         usable_members = active_members(df, members, matcher)
         member_display = {m.display: m for m in usable_members}
-        sel_author_disp = st.multiselect(
-            "著者（未選択＝全員）", list(member_display),
-            help="研究室メンバーで絞り込み。和名↔ローマ字や表記の揺れを吸収します。",
-        )
+        sel_author_disp = st.multiselect(tr("author_label", lang), list(member_display), help=tr("author_help", lang))
         sel_members = [member_display[d] for d in sel_author_disp]
 
         fys = sorted({int(y) for y in df["fiscal_year"].dropna().unique()})
         if fys:
-            fy_min, fy_max = st.select_slider(
-                "年度（4月始まり）", options=fys, value=(fys[0], fys[-1])
-            )
+            fy_min, fy_max = st.select_slider(tr("fy_label", lang), options=fys, value=(fys[0], fys[-1]))
         else:
             fy_min = fy_max = None
 
-        only_pr = st.checkbox("査読ありのみ（論文）", value=False)
+        only_pr = st.checkbox(tr("peer_label", lang), value=False)
 
-        st.header("書式")
-        preset = st.radio(
-            "提出先（テンプレート）", preset_names,
-            index=preset_names.index("科研費") if "科研費" in preset_names else 0,
-            help="提出先に合わせて選びます。細かい調整は各セクションの「書式を調整する」から。",
-        )
+        st.header(tr("sb_format", lang))
+        preset_disp = [preset_label(k, lang) for k in preset_keys]
+        default_idx = preset_keys.index("科研費") if "科研費" in preset_keys else 0
+        preset_choice = st.radio(tr("preset_label", lang), preset_disp, index=default_idx, help=tr("preset_help", lang))
+        preset = preset_keys[preset_disp.index(preset_choice)]
 
     # ── フィルタ適用 ─────────────────────────────────────────
     filtered = by_types(df, selected_types)
@@ -187,10 +158,10 @@ def main() -> None:
     filtered = by_peer_reviewed(filtered, only_pr)
     filtered = by_authors(filtered, sel_members, matcher)
 
-    st.caption(
-        f"全 {len(df)} 件中 {len(filtered)} 件を表示"
-        + (f"／著者: {', '.join(sel_author_disp)}" if sel_author_disp else "")
-    )
+    caption = tr("count_caption", lang).format(total=len(df), shown=len(filtered))
+    if sel_author_disp:
+        caption += tr("count_author_suffix", lang).format(names=", ".join(sel_author_disp))
+    st.caption(caption)
 
     # ── 種別ごとに整形・表示（0件はスキップ）──────────────────
     shown = 0
@@ -199,34 +170,44 @@ def main() -> None:
         if sub.empty:
             continue
         shown += 1
-        label = RECORD_TYPES[rtype]
+        label = rt_label(rtype, lang)
         type_templates = templates.get(rtype, {})
         spec = type_templates.get(preset) or next(
             iter(type_templates.values()), {"pattern": "{authors}. {title}."}
         )
 
-        st.subheader(f"{label}（{len(sub)} 件）")
+        st.subheader(tr("subheader", lang).format(label=label, n=len(sub)))
 
-        with st.expander("✏️ 書式を調整する（任意）"):
-            st.markdown(
-                "下の枠の **`{ }` で囲まれた語**が、その業績の内容に置き換わります。\n"
-                "- 不要な項目は消してOK／順番も自由に変えられます。\n"
-                "- 記号（`. ` `;` `()` など）はそのまま文章の区切りになります。\n\n"
-                "**この種別で使える項目:**\n" + placeholder_legend(rtype)
-            )
+        style_keys = style_fields_for(rtype)
+        disp_to_key = {ph_label(k, lang): k for k in style_keys}
+        with st.expander(tr("expander_format", lang)):
+            st.markdown(tr("legend_intro", lang) + placeholder_legend(rtype, lang))
             pattern = st.text_area(
-                "書式", value=spec.get("pattern", "{authors}. {title}."),
+                tr("format_textarea", lang), value=spec.get("pattern", "{authors}. {title}."),
                 key=f"pat_{rtype}", height=68, label_visibility="collapsed",
             )
+            st.caption(tr("style_hint", lang))
+            c1, c2 = st.columns(2)
+            with c1:
+                bold_disp = st.multiselect(tr("style_bold", lang), list(disp_to_key), key=f"bold_{rtype}")
+            with c2:
+                italic_disp = st.multiselect(tr("style_italic", lang), list(disp_to_key), key=f"italic_{rtype}")
+        bold_fields = {disp_to_key[d] for d in bold_disp}
+        italic_fields = {disp_to_key[d] for d in italic_disp}
         spec = {**spec, "pattern": pattern}
 
         result = render_records(
-            sub, spec, numeric_fields=NUMERIC_BY_TYPE.get(rtype, ())
+            sub, spec,
+            numeric_fields=NUMERIC_BY_TYPE.get(rtype, ()),
+            bold_fields=bold_fields, italic_fields=italic_fields, lang=lang,
         )
-        st.code(result["plain"], language=None)
+        st.caption(tr("copy_hint", lang))
+        st.markdown(result["markdown"])
+        with st.expander(tr("plain_expander", lang)):
+            st.code(result["plain"], language=None)
 
     if shown == 0:
-        st.info("条件に合う業績がありません。絞り込みを見直してください。")
+        st.info(tr("no_match_info", lang))
 
 
 if __name__ == "__main__":

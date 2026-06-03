@@ -36,6 +36,7 @@ from publication_summarizer.loader import (  # noqa: E402
     load_roster_sheet,
     load_workbook_bytes,
 )
+from publication_summarizer.i18n import rt_label, tr  # noqa: E402
 from publication_summarizer.roster import Member  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -66,6 +67,10 @@ def unit_tests() -> None:
     print("[unit] cleanup of empty fields")
     check("empty parens removed", "()" not in _cleanup("Title (). 2020"))
     check("dangling sep collapsed", _cleanup("a. b. 2020;():.") == "a. b. 2020")
+
+    print("[unit] i18n")
+    check("ja/en differ", tr("app_title", "ja") != tr("app_title", "en"))
+    check("rt_label en", rt_label("paper", "en") == "Original Papers / English Reviews")
 
     print("[unit] author matching (synthetic)")
     members = [
@@ -115,14 +120,24 @@ def integration_tests(source) -> None:
         sub = by_fiscal_year(df, fys[-1], fys[-1])
         check("latest FY subset <= all", len(sub) <= len(df) and len(sub) >= 0)
 
-    print("[integration] formatting (科研費, papers)")
+    print("[integration] formatting (科研費, papers) + bold/italic + lang")
     templates = load_templates()
     papers = df[df["type"] == "paper"]
     spec = templates["paper"]["科研費"]
-    out = render_records(papers, spec, emphasize=[m for m in members if m.last == "Miyazaki"], matcher=matcher)
+    out = render_records(papers, spec, bold_fields={"authors"}, italic_fields={"journal_abbr"})
     check("rendered non-empty", out["count"] > 0 and len(out["plain"]) > 0)
     check("no float .0 in volume", ".0;" not in out["plain"] and ".0)" not in out["plain"])
-    check("self bold in markdown", "**" in out["markdown"] or out["count"] == 0)
+    check("bold applied in markdown", "**" in out["markdown"])
+    check("italic applied in markdown", "*" in out["markdown"])
+    check("plain text has no style markers", "*" not in out["plain"])
+
+    grp = templates["paper"].get("業績一覧（年度別・番号付き）")
+    if grp:
+        en = render_records(papers, grp, lang="en")
+        ja = render_records(papers, grp, lang="ja")
+        check("EN fiscal-year heading", "FY " in en["markdown"])
+        check("JA fiscal-year heading", "年度" in ja["markdown"])
+
     print("\n  --- sample (first paper, plain) ---")
     print("  " + (out["plain"].splitlines()[0] if out["plain"] else "(none)"))
 
