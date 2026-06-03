@@ -99,7 +99,8 @@ def split_authors(authors_raw: str) -> list[str]:
     if not authors_raw:
         return []
     text = _ANNOTATION_RE.sub("", str(authors_raw))
-    parts = [p.strip(" .;") for p in text.split(",")]
+    # 先頭/末尾の "*"（共同筆頭マーク等）も除去。Markdown で誤って斜体にならないように。
+    parts = [p.strip(" .;*　") for p in text.split(",")]
     return [p for p in parts if p]
 
 

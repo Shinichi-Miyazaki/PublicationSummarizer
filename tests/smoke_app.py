@@ -24,9 +24,12 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 
 def main() -> None:
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    # ローカルに .streamlit/secrets.toml がある場合のパスワードゲートを越える。
+    at.session_state["authed"] = True
     at.run()
     assert not at.exception, f"初回実行で例外: {at.exception}"
-    print(f"[OK] 初回実行: subheader {len(at.subheader)} 個, info/error なし")
+    assert len(at.subheader) > 0, "本文が描画されていません（subheader=0）"
+    print(f"[OK] 初回実行: subheader {len(at.subheader)} 個, 例外なし")
 
     # 著者を1名選択して再実行（フィルタ＆名寄せ経路を通す）
     if at.multiselect:

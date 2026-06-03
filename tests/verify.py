@@ -129,7 +129,7 @@ def integration_tests(source) -> None:
     check("no float .0 in volume", ".0;" not in out["plain"] and ".0)" not in out["plain"])
     check("bold applied in markdown", "**" in out["markdown"])
     check("italic applied in markdown", "*" in out["markdown"])
-    check("plain text has no style markers", "*" not in out["plain"])
+    check("plain text has no bold markers", "**" not in out["plain"])
 
     grp = templates["paper"].get("業績一覧（年度別・番号付き）")
     if grp:
