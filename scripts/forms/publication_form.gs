@@ -353,13 +353,17 @@ function route(e) {
   sheet.appendRow(row);
 }
 
-/** 重複判定キー: doi があれば doi、無ければ 日付+タイトル先頭40字。 */
-function dupKeyOf_(doi, date, title) {
+/** 日付を 年/月（YYYY/MM）へ正規化（2025/7・2025-07-01・2025年7月 を吸収）。 */
+function ymOf_(s) {
+  var m = String(s || "").match(/(\d{4})\D+(\d{1,2})/);
+  return m ? (m[1] + "/" + ("0" + m[2]).slice(-2)) : String(s || "").trim();
+}
+function doiKeyOf_(doi) {
   doi = String(doi || "").trim().toLowerCase();
-  if (doi) return "doi:" + doi;
-  date = String(date || "").trim();
-  title = String(title || "").trim().toLowerCase().slice(0, 40);
-  return "dt:" + date + "|" + title;
+  return doi ? ("doi:" + doi) : "";
+}
+function dtKeyOf_(date, title) {
+  return "dt:" + ymOf_(date) + "|" + String(title || "").trim().toLowerCase().slice(0, 40);
 }
 
 /** values（新規）の代表タイトル（_ja 優先、無ければ _en、book は book_title）。 */
@@ -372,21 +376,25 @@ function recTitleOf_(v) {
   return "";
 }
 
-/** 既存行を走査し、新規 values と重複する行の record_id を返す（無ければ ""）。 */
+/** 既存行を走査し、重複（DOI 一致 or 年月+タイトル一致）する行の record_id を返す。 */
 function findDuplicate_(sheet, header, values) {
   var last = sheet.getLastRow();
   if (last < 2) return "";
   var col = {};
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
-  var newKey = dupKeyOf_(values.doi, values.date, recTitleOf_(values));
+  var newDoi = doiKeyOf_(values.doi);
+  var newDt = dtKeyOf_(values.date, recTitleOf_(values));
   var data = sheet.getRange(2, 1, last - 1, header.length).getValues();
   for (var r = 0; r < data.length; r++) {
     var row = data[r];
     function cell(name) { return name in col ? row[col[name]] : ""; }
     var t = String(cell("title_ja") || cell("title_en") ||
                    cell("book_title_ja") || cell("book_title_en") || "").trim();
-    var key = dupKeyOf_(cell("doi"), cell("date"), t);
-    if (key === newKey) return String(cell("record_id") || "").trim() || "(既存)";
+    var doi = doiKeyOf_(cell("doi"));
+    var dt = dtKeyOf_(cell("date"), t);
+    if ((newDoi && doi === newDoi) || dt === newDt) {
+      return String(cell("record_id") || "").trim() || "(既存)";
+    }
   }
   return "";
 }

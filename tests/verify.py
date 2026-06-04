@@ -136,6 +136,25 @@ def v2_tests() -> None:
     ing = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ing)
 
+    print("[v2] 重複検出（DOI有無の混在・日付表記ゆれを横断）")
+    ddir = Path(__file__).resolve().parent
+    dpath = ddir / "_v2_dup.xlsx"
+    try:
+        a = {"date": "2025/7", "title": "Circular RNA biomarker", "authors": "Miyazaki S"}
+        b = {"date": "2025/07/15", "title": "Circular RNA biomarker", "authors": "Miyazaki S",
+             "doi": "10.1/abc"}
+        c = dict(a)
+        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [a]},
+                            "paste", "未確認")
+        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [b, c]},
+                            "paste", "未確認", append_to=dpath)
+        import pandas as pd2
+        ddf = pd2.read_excel(dpath, sheet_name="Original Papers")
+        check("同一論文は1件に集約（DOI有無・日付ゆれ横断）", len(ddf) == 1, f"rows={len(ddf)}")
+    finally:
+        if dpath.exists():
+            dpath.unlink()
+
     tmp_in = Path(__file__).resolve().parent / "_v2_old.xlsx"
     tmp_out = Path(__file__).resolve().parent / "_v2_new.xlsx"
     try:

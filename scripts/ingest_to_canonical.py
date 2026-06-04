@@ -329,24 +329,42 @@ def _ensure_bilingual(rec: dict) -> dict:
     return out
 
 
+def _s(value) -> str:
+    """セル値を安全に文字列化（NaN/None は空文字。str(NaN)=='nan' の混入を防ぐ）。"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return str(value).strip()
+
+
 def _rec_title(rec: dict) -> str:
     """重複判定・存在チェック用の代表タイトル（_ja/_en/base/book_title を横断）。"""
     for key in ("title_ja", "title_en", "title",
                 "book_title_ja", "book_title_en", "book_title"):
-        v = str(rec.get(key, "")).strip()
+        v = _s(rec.get(key))
         if v:
             return v
     return ""
 
 
-def _dup_key(rec: dict) -> str:
-    """重複検出キー: doi があれば doi、無ければ date+title 先頭。"""
-    doi = str(rec.get("doi", "")).strip().lower()
-    if doi:
-        return f"doi:{doi}"
-    date = str(_cell_out(rec.get("date", ""))).strip()
+def _ym(value) -> str:
+    """日付を年/月（YYYY/MM）に正規化。形式差（2025/7 と 2025/07/01）を吸収。"""
+    ts = _parse_date(value)
+    if not (ts is None or pd.isna(ts)):
+        return ts.strftime("%Y/%m")
+    return str(_cell_out(value)).strip()
+
+
+def _dup_keys(rec: dict) -> tuple[str | None, str]:
+    """重複検出キーの対 (doi_key, dt_key) を返す。
+
+    doi が一致、または「年月＋タイトル先頭」が一致すれば重複とみなす（どちらか一方でも可）。
+    これにより DOI 有無の混在（フォーム⇄貼り付け）や日付表記ゆれでも検出できる。
+    """
+    doi = _s(rec.get("doi")).lower()
+    doi_key = f"doi:{doi}" if doi else None
     title = _rec_title(rec).lower()[:40]
-    return f"dt:{date}|{title}"
+    dt_key = f"dt:{_ym(rec.get('date', ''))}|{title}"
+    return doi_key, dt_key
 
 
 def _read_existing(path: Path) -> dict[str, list[dict]]:
@@ -379,16 +397,24 @@ def write_canonical(out: Path, by_type: dict[str, list[dict]], source_label: str
 
     for rtype, new_recs in by_type.items():
         existing = base[rtype]
-        seen = {_dup_key(r) for r in existing}
+        seen_doi: set[str] = set()
+        seen_dt: set[str] = set()
+        for r in existing:
+            dk, tk = _dup_keys(r)
+            if dk:
+                seen_doi.add(dk)
+            seen_dt.add(tk)
         prefix = ID_PREFIX[rtype]
         seq = _next_seq(existing)
         n_added = 0
         for rec in new_recs:
             rec = _ensure_bilingual(rec)
-            key = _dup_key(rec)
-            if key in seen:
+            doi_key, dt_key = _dup_keys(rec)
+            if (doi_key and doi_key in seen_doi) or dt_key in seen_dt:
                 continue
-            seen.add(key)
+            if doi_key:
+                seen_doi.add(doi_key)
+            seen_dt.add(dt_key)
             full = {f: _cell_out(rec.get(f, "")) for f in CANONICAL_FIELDS[rtype]}
             full.update({
                 "record_id": f"{prefix}-{seq:04d}",

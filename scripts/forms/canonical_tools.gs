@@ -93,16 +93,18 @@ function recheckDuplicates() {
   var col = {};
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
   var data = sh.getRange(2, 1, last - 1, header.length).getValues();
-  var seen = {}, flagged = 0;
+  var seenDoi = {}, seenDt = {}, flagged = 0;
   for (var r = 0; r < data.length; r++) {
     var row = data[r];
     function c(name) { return name in col ? row[col[name]] : ""; }
     var t = String(c("title_ja") || c("title_en") || c("book_title_ja") || c("book_title_en") || "").trim();
-    var key = dupKeyOf_(c("doi"), c("date"), t);
-    if (seen[key]) {
+    var doi = doiKeyOf_(c("doi"));
+    var dt = dtKeyOf_(c("date"), t);
+    var first = (doi && seenDoi[doi]) || seenDt[dt] || "";  // 一致した既存の record_id
+    if (first) {
       if (col.note != null) {
         var note = String(row[col.note] || "");
-        var tag = "dup_of=" + seen[key];
+        var tag = "dup_of=" + first;
         if (note.indexOf(tag) < 0) {
           row[col.note] = note ? note + "; " + tag : tag;
           sh.getRange(r + 2, col.note + 1).setValue(row[col.note]);
@@ -110,7 +112,9 @@ function recheckDuplicates() {
         }
       }
     } else {
-      seen[key] = String(c("record_id") || "").trim() || ("行" + (r + 2));
+      var rid = String(c("record_id") || "").trim() || ("行" + (r + 2));
+      if (doi) seenDoi[doi] = rid;
+      seenDt[dt] = rid;
     }
   }
   toast_(flagged + " 件の重複候補に印を付けました");
@@ -191,12 +195,16 @@ function eachSelectedDataRow_(sh, fn) {
   });
 }
 
-function dupKeyOf_(doi, date, title) {
+function ymOf_(s) {
+  var m = String(s || "").match(/(\d{4})\D+(\d{1,2})/);
+  return m ? (m[1] + "/" + ("0" + m[2]).slice(-2)) : String(s || "").trim();
+}
+function doiKeyOf_(doi) {
   doi = String(doi || "").trim().toLowerCase();
-  if (doi) return "doi:" + doi;
-  date = String(date || "").trim();
-  title = String(title || "").trim().toLowerCase().slice(0, 40);
-  return "dt:" + date + "|" + title;
+  return doi ? ("doi:" + doi) : "";
+}
+function dtKeyOf_(date, title) {
+  return "dt:" + ymOf_(date) + "|" + String(title || "").trim().toLowerCase().slice(0, 40);
 }
 
 function fetchCrossref_(doi) {
