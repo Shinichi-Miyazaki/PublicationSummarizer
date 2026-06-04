@@ -18,6 +18,7 @@ import yaml
 
 from .i18n import tr
 from .roster import split_authors
+from .schema import BILINGUAL_FIELDS
 
 _TEMPLATES_PATH = Path(__file__).with_name("templates.yaml")
 
@@ -91,6 +92,19 @@ class _SafeDict(dict):
         return ""
 
 
+def _resolve_lang(fields: dict, lang: str) -> None:
+    """二ヶ国語 base を表示言語へ解決して fields[base] に入れる。
+
+    en: F_en があれば F_en、無ければ F_ja。 ja: 逆。片方のみなら有る方を使う。
+    """
+    for base in BILINGUAL_FIELDS:
+        ja_v = fields.get(base + "_ja", "")
+        en_v = fields.get(base + "_en", "")
+        ja = "" if ja_v is None else str(ja_v).strip()
+        en = "" if en_v is None else str(en_v).strip()
+        fields[base] = (en or ja) if lang == "en" else (ja or en)
+
+
 def _build_fields(
     rec: dict,
     spec_numeric: tuple[str, ...],
@@ -98,6 +112,7 @@ def _build_fields(
     markdown: bool,
     bold: set[str],
     italic: set[str],
+    lang: str = "ja",
 ) -> dict:
     fields = {}
     for k, v in rec.items():
@@ -110,6 +125,7 @@ def _build_fields(
     for k, v in list(fields.items()):
         if isinstance(v, float):
             fields[k] = clean_number(v)
+    _resolve_lang(fields, lang)  # {title} 等の base を表示言語へ
     fields["year"] = _year(rec.get("date"))
     fields["date"] = (
         rec["date"].strftime("%Y/%m/%d")
@@ -132,8 +148,9 @@ def render_one(
     markdown: bool,
     bold: set[str],
     italic: set[str],
+    lang: str = "ja",
 ) -> str:
-    fields = _build_fields(rec, spec_numeric, sep, markdown, bold, italic)
+    fields = _build_fields(rec, spec_numeric, sep, markdown, bold, italic, lang)
     raw = pattern.format_map(_SafeDict(fields))
     return _cleanup(raw)
 
@@ -177,8 +194,8 @@ def render_records(
         for i, (_, rec) in enumerate(records.iterrows(), start=1):
             prefix = f"{i}. " if numbering else ""
             d = rec.to_dict()
-            md = render_one(d, pattern, numeric_fields, sep, True, bold, italic)
-            tx = render_one(d, pattern, numeric_fields, sep, False, set(), set())
+            md = render_one(d, pattern, numeric_fields, sep, True, bold, italic, lang)
+            tx = render_one(d, pattern, numeric_fields, sep, False, set(), set(), lang)
             md_lines.append(f"{prefix}{md}")
             txt_lines.append(f"{prefix}{tx}")
 

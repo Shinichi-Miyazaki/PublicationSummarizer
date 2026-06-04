@@ -59,8 +59,17 @@ def by_authors(
     return df[mask]
 
 
+# 査読ありと見なす表記（フォーム「査読あり」・旧データ「〇」・英語表記などを許容）。
+_PEER_YES = {"査読あり", "〇", "○", "あり", "有", "yes", "true", "peer-reviewed", "peerreviewed", "1"}
+
+
+def _is_peer_reviewed(value) -> bool:
+    s = str(value).strip().lower().replace(" ", "")
+    return s in {v.lower() for v in _PEER_YES}
+
+
 def by_peer_reviewed(df: pd.DataFrame, only_peer_reviewed: bool) -> pd.DataFrame:
-    """査読ありのみに絞り込む（peer_reviewed 列が "〇" の行）。"""
+    """査読ありのみに絞り込む。表記ゆれ（査読あり/〇/yes 等）を吸収する。"""
     if not only_peer_reviewed or "peer_reviewed" not in df.columns:
         return df
-    return df[df["peer_reviewed"].astype(str).str.strip() == "〇"]
+    return df[df["peer_reviewed"].apply(_is_peer_reviewed)]

@@ -32,12 +32,13 @@ from publication_summarizer.i18n import (
     tr,
 )
 from publication_summarizer.loader import load_roster_sheet, load_workbook_bytes
-from publication_summarizer.schema import SHEET_SPECS
+from publication_summarizer.schema import SHEET_SPECS, display_fields
 
 st.set_page_config(page_title="研究業績サマライザー / Publication Summarizer", layout="wide")
 
 NUMERIC_BY_TYPE = {s.rtype: s.numeric_fields for s in SHEET_SPECS}
-COLS_BY_TYPE = {s.rtype: list(s.fields) for s in SHEET_SPECS}
+# 書式凡例・装飾対象は base 名に集約（二ヶ国語ペア _ja/_en は {title} 等として解決）。
+COLS_BY_TYPE = {s.rtype: display_fields(s.rtype) for s in SHEET_SPECS}
 
 
 @st.cache_data(ttl=600, show_spinner="スプレッドシートを取得中…")

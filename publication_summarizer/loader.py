@@ -13,10 +13,10 @@ from typing import Union
 import pandas as pd
 import requests
 
-from .schema import ROSTER_KEYWORD, SheetSpec, spec_for_sheet
+from .schema import BILINGUAL_FIELDS, ROSTER_KEYWORD, SheetSpec, spec_for_sheet
 
 # 既定の対象スプレッドシート ID（研究室業績シート / Canonical）。
-DEFAULT_SHEET_ID = "1_7b_-6EsRNr6tW1naDj8QJ5M0espE5Wv"
+DEFAULT_SHEET_ID = "15iim9QA0B64XiZV7h8MINq1h8SExKBrfgdy93WIW6dw"
 
 _EXPORT_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
 _ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
@@ -74,6 +74,41 @@ def _parse_date(value) -> pd.Timestamp:
     return pd.to_datetime(value, errors="coerce")
 
 
+_CJK_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿ｦ-ﾟ]")
+
+
+def _has_cjk(text: str) -> bool:
+    """日本語（かな・漢字）を含むか。旧単一列の言語判定に使う。"""
+    return bool(_CJK_RE.search(text))
+
+
+def _resolve_bilingual(rec: dict, row: pd.Series, spec: SheetSpec) -> None:
+    """二ヶ国語 base について rec[base_ja]/rec[base_en] を確定する（後方互換）。
+
+    新スキーマ（_ja/_en 列）があればそのまま。旧単一列 `base` しか無い場合は
+    CJK 文字の有無で言語を判定して片側へ割り当てる。
+    """
+    for base in BILINGUAL_FIELDS:
+        ja_key, en_key = base + "_ja", base + "_en"
+        if ja_key not in spec.fields:  # この種別が持たない base はスキップ
+            continue
+        ja = str(rec.get(ja_key, "")).strip()
+        en = str(rec.get(en_key, "")).strip()
+        if ja or en:
+            continue
+        legacy = _value(row, base)  # 旧単一列
+        legacy_s = str(legacy).strip()
+        if legacy_s:
+            rec[ja_key if _has_cjk(legacy_s) else en_key] = legacy
+
+
+def _pick_lang(rec: dict, base: str) -> str:
+    """base の代表値（_ja 優先、無ければ _en）を返す。空チェック・既定表示用。"""
+    ja = str(rec.get(base + "_ja", "")).strip()
+    en = str(rec.get(base + "_en", "")).strip()
+    return ja or en
+
+
 def _value(row: pd.Series, name: str) -> str:
     """指定ヘッダ名の値を返す（欠損は空文字、文字列は trim）。"""
     if name not in row.index:
@@ -101,10 +136,12 @@ def _normalize_sheet(raw: pd.DataFrame, spec: SheetSpec) -> list[dict]:
         for logical in spec.fields:
             rec[logical] = _value(row, logical)
         rec["record_id"] = _value(row, "record_id")
+        # 二ヶ国語 base の _ja/_en を確定（旧単一列の後方互換を含む）。
+        _resolve_bilingual(rec, row, spec)
 
         # 著者・主タイトル・日付がいずれも空の行（空テンプレ）は捨てる。
         people = str(rec.get(spec.people_field, "")).strip()
-        main_title = str(rec.get(spec.title_field, "")).strip()
+        main_title = _pick_lang(rec, spec.title_field)
         date_cell = str(rec.get(spec.date_field, "")).strip()
         if not (people or main_title or date_cell):
             continue
@@ -113,8 +150,9 @@ def _normalize_sheet(raw: pd.DataFrame, spec: SheetSpec) -> list[dict]:
         rec["date"] = date
         rec["fiscal_year"] = _fiscal_year(date)
         rec["authors_raw"] = rec.get(spec.people_field, "")
+        # 既定の `title` 列（直接参照・状態ゲート用）。主タイトルを言語解決して入れる。
         if not str(rec.get("title", "")).strip():
-            rec["title"] = rec.get(spec.title_field, "")
+            rec["title"] = _pick_lang(rec, spec.title_field) or _pick_lang(rec, "title")
         records.append(rec)
     return records
 

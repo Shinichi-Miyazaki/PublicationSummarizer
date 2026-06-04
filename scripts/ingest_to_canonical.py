@@ -39,26 +39,33 @@ from rapidfuzz import fuzz
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from publication_summarizer.loader import (  # noqa: E402
+    _has_cjk,
     _parse_date,
     extract_sheet_id,
     load_workbook_bytes,
 )
+from publication_summarizer.schema import BILINGUAL_FIELDS, expand_bilingual  # noqa: E402
 
 # ── Canonical の定義 ───────────────────────────────────────────────
-META_FIELDS = ["record_id", "status", "submitter", "source", "created_at"]
+# note: 重複注記（dup_of=...）・補完元（crossref）等のキュレーション用メモ。
+META_FIELDS = ["record_id", "status", "submitter", "source", "created_at", "note"]
 
-# 種別ごとの本体列（ヘッダ名＝論理フィールド名）。schema.py の論理名と一致。
-CANONICAL_FIELDS: dict[str, list[str]] = {
-    "paper": ["date", "category", "peer_reviewed", "authors", "title",
-              "journal", "journal_abbr", "volume", "issue", "pages", "doi"],
-    "book": ["date", "international", "peer_reviewed", "authors", "review_title",
+# 種別ごとの本体列（base 並び）。二ヶ国語 base は expand_bilingual で _ja/_en へ展開。
+# schema.SHEET_SPECS と一致（tests/test_form_fields.py が検証）。
+_BASE_FIELDS: dict[str, tuple[str, ...]] = {
+    "paper": ("date", "category", "peer_reviewed", "authors", "title",
+              "journal", "journal_abbr", "volume", "issue", "pages", "doi"),
+    "book": ("date", "international", "peer_reviewed", "authors", "review_title",
              "book_title", "chapter", "editor", "volume", "issue", "pages",
-             "publisher", "doi", "issn", "isbn"],
-    "presentation": ["date", "scope", "title", "authors", "conference",
-                     "symposium", "invited", "venue", "presentation_type"],
-    "award": ["date", "scope", "authors", "title", "awarded_study", "organization"],
-    "outreach": ["date", "scope", "authors", "title", "venue"],
-    "publicity": ["date", "media_type", "media_name", "authors", "title", "link"],
+             "publisher", "doi", "issn", "isbn"),
+    "presentation": ("date", "scope", "title", "authors", "conference",
+                     "symposium", "invited", "venue", "presentation_type"),
+    "award": ("date", "scope", "authors", "title", "awarded_study", "organization"),
+    "outreach": ("date", "scope", "authors", "title", "venue"),
+    "publicity": ("date", "media_type", "media_name", "authors", "title", "link"),
+}
+CANONICAL_FIELDS: dict[str, list[str]] = {
+    rt: list(expand_bilingual(bases)) for rt, bases in _BASE_FIELDS.items()
 }
 
 # Canonical タブ名（spec_for_sheet のキーワードを含む安定名）。
@@ -215,20 +222,55 @@ def _norm_header(text: str) -> str:
     return text.strip().lower()
 
 
+# 言語マーカー（見出し内に含まれていれば二ヶ国語 base の片側へ振り分ける）。
+_JA_MARKERS = ["日本語", "和文", "邦文", "japanese", "ja", "jp"]
+_EN_MARKERS = ["英語", "英文", "english", "en"]
+
+
+def _detect_marker(norm: str) -> tuple[str | None, str]:
+    """正規化ヘッダから言語マーカーを検出し、(lang, マーカー除去後) を返す。"""
+    for mk in _JA_MARKERS:
+        if mk in norm:
+            return "ja", norm.replace(mk, "")
+    for mk in _EN_MARKERS:
+        if mk in norm:
+            return "en", norm.replace(mk, "")
+    return None, norm
+
+
 def _match_field(header: str, rtype: str, threshold: int = 80) -> str | None:
-    """入力ヘッダを、その種別の論理フィールドへ近似マッピング。"""
+    """入力ヘッダを、その種別の Canonical 列へ近似マッピング。
+
+    base 名で照合し、二ヶ国語 base は見出しの言語マーカー（日本語/英語 等）で
+    `_ja`/`_en` を決める。マーカーが無い汎用見出しは base を返し、後段
+    （_ensure_bilingual）が本文の言語で振り分ける。
+    """
     norm = _norm_header(header)
     if not norm:
         return None
-    best_field, best_score = None, 0
-    for field in CANONICAL_FIELDS[rtype]:
-        candidates = [field] + FIELD_ALIASES.get(field, [])
-        score = max(fuzz.ratio(norm, _norm_header(c)) for c in candidates)
-        if _norm_header(field) == norm or any(_norm_header(c) == norm for c in candidates):
-            return field
+    lang, stripped = _detect_marker(norm)
+    best_base, best_score = None, 0
+    for base in _BASE_FIELDS[rtype]:
+        candidates = [base] + FIELD_ALIASES.get(base, [])
+        cand_norms = [_norm_header(c) for c in candidates]
+        if stripped in cand_norms or norm in cand_norms:
+            best_base = base
+            break
+        score = max(fuzz.ratio(stripped, c) for c in cand_norms)
         if score > best_score:
-            best_field, best_score = field, score
-    return best_field if best_score >= threshold else None
+            best_base, best_score = base, score
+    else:
+        if best_score < threshold:
+            return None
+    if best_base is None:
+        return None
+    if best_base in BILINGUAL_FIELDS:
+        if lang == "ja":
+            return best_base + "_ja"
+        if lang == "en":
+            return best_base + "_en"
+        return best_base  # 汎用見出し → 後段で言語振り分け
+    return best_base
 
 
 def ingest_structured(src: Path, rtype: str, is_csv: bool) -> list[dict]:
@@ -250,7 +292,8 @@ def ingest_structured(src: Path, rtype: str, is_csv: bool) -> list[dict]:
     records: list[dict] = []
     for _, row in df.iterrows():
         rec = {field: ("" if pd.isna(row[col]) else row[col]) for col, field in colmap.items()}
-        if not (str(rec.get("authors", "")).strip() or str(rec.get("title", "")).strip()):
+        if not (str(rec.get("authors", "")).strip() or _rec_title(rec) or
+                str(rec.get("title", "")).strip()):
             continue
         records.append(rec)
     return records
@@ -267,13 +310,42 @@ def _cell_out(value):
     return value
 
 
+def _ensure_bilingual(rec: dict) -> dict:
+    """汎用 base 値（title 等）を本文の言語で `_ja`/`_en` へ振り分ける。
+
+    既に `_ja`/`_en` が入っていればそれを優先（上書きしない）。rec は破壊しない。
+    """
+    out = dict(rec)
+    for base in BILINGUAL_FIELDS:
+        if base not in out:
+            continue
+        val = out.pop(base)
+        val_s = str(val).strip() if not (isinstance(val, float) and pd.isna(val)) else ""
+        if not val_s:
+            continue
+        slot = base + ("_ja" if _has_cjk(val_s) else "_en")
+        if not str(out.get(slot, "")).strip():
+            out[slot] = val
+    return out
+
+
+def _rec_title(rec: dict) -> str:
+    """重複判定・存在チェック用の代表タイトル（_ja/_en/base/book_title を横断）。"""
+    for key in ("title_ja", "title_en", "title",
+                "book_title_ja", "book_title_en", "book_title"):
+        v = str(rec.get(key, "")).strip()
+        if v:
+            return v
+    return ""
+
+
 def _dup_key(rec: dict) -> str:
     """重複検出キー: doi があれば doi、無ければ date+title 先頭。"""
     doi = str(rec.get("doi", "")).strip().lower()
     if doi:
         return f"doi:{doi}"
     date = str(_cell_out(rec.get("date", ""))).strip()
-    title = str(rec.get("title", rec.get("book_title", ""))).strip().lower()[:40]
+    title = _rec_title(rec).lower()[:40]
     return f"dt:{date}|{title}"
 
 
@@ -312,6 +384,7 @@ def write_canonical(out: Path, by_type: dict[str, list[dict]], source_label: str
         seq = _next_seq(existing)
         n_added = 0
         for rec in new_recs:
+            rec = _ensure_bilingual(rec)
             key = _dup_key(rec)
             if key in seen:
                 continue
@@ -323,22 +396,30 @@ def write_canonical(out: Path, by_type: dict[str, list[dict]], source_label: str
                 "submitter": str(rec.get("submitter", "")).strip(),
                 "source": source_label,
                 "created_at": now,
+                "note": str(rec.get("note", "")).strip(),
             })
             existing.append(full)
             seq += 1
             n_added += 1
         added[rtype] = n_added
 
+    _save_workbook(out, base, roster_raw)
+    return added
+
+
+def _save_workbook(out: Path, by_type: dict[str, list[dict]],
+                   roster_raw: pd.DataFrame | None = None) -> None:
+    """種別別レコード（full 行 dict）を v2 Canonical xlsx として保存する。"""
     wb = Workbook()
     wb.remove(wb.active)
     for rtype, fields in CANONICAL_FIELDS.items():
         ws = wb.create_sheet(TAB_NAME[rtype])
         header = META_FIELDS + fields
         ws.append(header)
-        for rec in base[rtype]:
+        for rec in by_type[rtype]:
             ws.append([rec.get(h, "") for h in header])
 
-    # 名簿タブ（legacy のときだけ複写）。parse_roster は B列=役職, C列=氏名 を読む。
+    # 名簿タブ（あれば複写）。parse_roster は B列=役職, C列=氏名 を読む。
     if roster_raw is not None and not roster_raw.empty:
         ws = wb.create_sheet(ROSTER_TAB)
         for _, row in roster_raw.iterrows():
@@ -346,13 +427,56 @@ def write_canonical(out: Path, by_type: dict[str, list[dict]], source_label: str
 
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
-    return added
+
+
+def upgrade_canonical(src: Path, out: Path) -> dict[str, int]:
+    """旧 Canonical（単一言語列）を v2（_ja/_en + note）へ移行する。
+
+    メタ（record_id/status/submitter/source/created_at）は保持し、二ヶ国語 base は
+    本文の言語で _ja/_en へ振り分ける。再採番・status 変更・重複除外はしない。
+    """
+    sheets = pd.read_excel(src, sheet_name=None, header=0)
+    raw_sheets = pd.read_excel(src, sheet_name=None, header=None)
+    name_to_type = {v.lower(): k for k, v in TAB_NAME.items()}
+    by_type: dict[str, list[dict]] = {rt: [] for rt in CANONICAL_FIELDS}
+    counts: dict[str, int] = {}
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+
+    for name, df in sheets.items():
+        rtype = name_to_type.get(name.lower())
+        if rtype is None:
+            continue
+        seq = 1
+        for _, row in df.iterrows():
+            rec = {c: ("" if pd.isna(row[c]) else row[c]) for c in df.columns}
+            rec = _ensure_bilingual(rec)
+            if not (str(rec.get("authors", "")).strip() or _rec_title(rec)
+                    or str(_cell_out(rec.get("date", ""))).strip()):
+                continue
+            rid = str(rec.get("record_id", "")).strip() or f"{ID_PREFIX[rtype]}-{seq:04d}"
+            full = {f: _cell_out(rec.get(f, "")) for f in CANONICAL_FIELDS[rtype]}
+            full.update({
+                "record_id": rid,
+                "status": str(rec.get("status", "")).strip(),
+                "submitter": str(rec.get("submitter", "")).strip(),
+                "source": str(rec.get("source", "")).strip() or "upgrade",
+                "created_at": str(rec.get("created_at", "")).strip() or now,
+                "note": str(rec.get("note", "")).strip(),
+            })
+            by_type[rtype].append(full)
+            seq += 1
+        counts[rtype] = len(by_type[rtype])
+
+    roster_raw = next((raw for nm, raw in raw_sheets.items()
+                       if ROSTER_TAB.lower() in nm.lower()), None)
+    _save_workbook(out, by_type, roster_raw)
+    return counts
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="既存業績リスト → Canonical xlsx 取り込み")
-    ap.add_argument("--from", dest="mode", required=True, choices=["legacy", "xlsx", "csv"])
-    ap.add_argument("--src", help="入力ソース: legacy=Sheet ID/URL もしくはローカル xlsx / xlsx,csv=ファイルパス")
+    ap.add_argument("--from", dest="mode", required=True, choices=["legacy", "xlsx", "csv", "upgrade"])
+    ap.add_argument("--src", help="入力ソース: legacy=Sheet ID/URL もしくはローカル xlsx / xlsx,csv,upgrade=ファイルパス")
     ap.add_argument("--type", dest="rtype", choices=list(CANONICAL_FIELDS),
                     help="xlsx/csv モードで必須: 取り込む業績種別")
     ap.add_argument("--out", help="出力 Canonical xlsx（新規作成）")
@@ -363,6 +487,17 @@ def main() -> None:
     out = Path(args.out) if args.out else append_to
     if out is None:
         ap.error("--out か --append のいずれかが必要です。")
+
+    if args.mode == "upgrade":
+        if not args.src or not Path(args.src).exists():
+            ap.error("upgrade モードでは既存 Canonical xlsx を --src で指定してください。")
+        counts = upgrade_canonical(Path(args.src), out)
+        total = sum(counts.values())
+        print(f"\n[完了] {out} へ v2（_ja/_en + note）として {total} 件を移行しました。")
+        for rtype, n in counts.items():
+            if n:
+                print(f"  - {TAB_NAME[rtype]}: {n}")
+        return
 
     if args.mode == "legacy":
         src = args.src
