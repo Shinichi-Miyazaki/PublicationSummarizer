@@ -42,9 +42,42 @@ TITLE_FIELD = {"paper": "title", "book": "review_title", "presentation": "title"
 VENUE_FIELD = {"paper": "journal", "book": "book_title", "presentation": "conference",
                "award": "organization", "outreach": "venue", "publicity": "media_name"}
 
-_DATE_RE = re.compile(r"(\d{4})年\s*(\d{1,2})月(?:\s*(\d{1,2})日)?")
 _VOLISSUE_RE = re.compile(r"(\d+)\s*\(\s*(\d+)\s*\)")
 _PAGES_RE = re.compile(r"(\d+)\s*[-–—―]\s*(\d+)")
+
+# 日付検出（researchmap は日本語/英語どちらの表記もありうる）。
+_MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+_DATE_JP = re.compile(r"(\d{4})年\s*(\d{1,2})月(?:\s*(\d{1,2})日)?")
+# 月名は完全な語のみ（\b で囲み、Marine 等の途中一致を防ぐ）。「Dec, 2021」「December 3, 2021」対応。
+_DATE_EN = re.compile(
+    r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b"
+    r"[.,]?\s*(?:(\d{1,2})\s*,?\s*)?(\d{4})",
+    re.IGNORECASE)
+_DATE_NUM = re.compile(r"(\d{4})[/\-.](\d{1,2})(?:[/\-.](\d{1,2}))?")
+
+
+def _find_date(line: str):
+    """行から日付を検出し (start, end, 'YYYY/M[/D]') を返す（無ければ None）。
+
+    日本語「2025年7月[3日]」・英語「Dec, 2021 / December 3, 2021」・数値「2025/07/01」に対応。
+    複数候補があれば最も前方のものを採用する。
+    """
+    cands = []
+    m = _DATE_JP.search(line)
+    if m:
+        cands.append((m.start(), m.end(), int(m.group(1)), int(m.group(2)), m.group(3)))
+    m = _DATE_EN.search(line)
+    if m:
+        cands.append((m.start(), m.end(), int(m.group(3)), _MONTHS[m.group(1).lower()[:3]], m.group(2)))
+    m = _DATE_NUM.search(line)
+    if m:
+        cands.append((m.start(), m.end(), int(m.group(1)), int(m.group(2)), m.group(3)))
+    if not cands:
+        return None
+    s, e, y, mo, d = min(cands, key=lambda c: c[0])
+    return s, e, (f"{y}/{mo}/{int(d)}" if d else f"{y}/{mo}")
 
 
 def _looks_like_authors(line: str) -> bool:
@@ -76,16 +109,15 @@ def parse_records(text: str, rtype: str) -> list[dict]:
     buf: list[str] = []
 
     for line in lines:
-        m = _DATE_RE.search(line)
-        if not m:
+        found = _find_date(line)
+        if not found:
             buf.append(line)
             continue
 
         # 区切り行（日付を含む）。日付より前を誌名・巻号頁として取り込む。
-        rec: dict = {}
-        y, mo, d = m.group(1), m.group(2), m.group(3)
-        rec["date"] = f"{y}/{mo}/{d}" if d else f"{y}/{mo}"
-        _parse_source(line[:m.start()], rtype, rec)
+        start, _end, date_str = found
+        rec: dict = {"date": date_str}
+        _parse_source(line[:start], rtype, rec)
 
         # 直前までの行をタイトル／著者へ割り当てる。
         if buf:

@@ -236,6 +236,16 @@ def paste_tests() -> None:
     check("発表2: 演題", tr[1].get("title") == "睡眠制御のメカニズムと睡眠の機能の解明に向けて", str(tr[1]))
     check("発表2: 学会名", tr[1].get("conference") == "線虫研究の未来を創る会2024")
 
+    print("[paste] 英語日付（Dec, 2021 等）と月名の途中一致防止")
+    en = ip.parse_records(
+        "Lipids and proteins changes detected by CARS\n"
+        "Shinichi Miyazaki, Hideaki Kano\n"
+        "Material Research Meeting  Dec, 2021\n", "presentation")
+    check("英語日付1件", len(en) == 1, f"n={len(en)}")
+    check("英語日付→2021/12", en and en[0].get("date") == "2021/12", str(en[:1]))
+    check("学会名(英語)", en and en[0].get("conference") == "Material Research Meeting")
+    check("Marine等の月名途中一致を誤検出しない", ip._find_date("Marine Biology Society 2021") is None)
+
 
 def integration_tests(source) -> None:
     print("[integration] loading workbook")
