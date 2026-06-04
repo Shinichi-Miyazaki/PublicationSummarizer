@@ -1,19 +1,17 @@
-"""シート → 列インデックス（位置）マッピングと業績種別の定義。
+"""シート → 論理フィールド定義と業績種別の定義。
 
-対象スプレッドシートは列名が日英2言語・改行入り・列ズレありで不安定なため、
-列名ではなく **列インデックス（0始まり）** で各論理フィールドを取り出す。
+対象スプレッドシート（Canonical）は **1 行目＝安定したヘッダ名**（論理フィールド名）を持つ。
+loader はヘッダ名で各フィールドを取り出すため、ここでは各業績シートが持つ
+**論理フィールドの並び**（`fields`）と、フィルタ・整形に使う代表フィールドを定義する。
 
-各業績シートの共通レイアウト（0始まりの行番号）:
-    R0 = シートタイトル/注意書き
-    R1 = 列名（参考。実際の抽出には使わない）
-    R2 = 記入例の注意書き
-    R3 = Example 行（B列 = "例"）
-    R4 以降 = 実データ（A列 No = 1, 2, 3 ...）
+各業績シートの共通レイアウト:
+    R0 = ヘッダ行（メタ列 record_id/status/submitter/source/created_at ＋ 各 fields）
+    R1 以降 = 実データ（1 行 = 1 業績）
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # 業績種別（内部キー → 画面表示ラベル）
@@ -33,7 +31,7 @@ class SheetSpec:
 
     keyword: str  # シート名に含まれる識別キーワード（大文字小文字無視で部分一致）
     rtype: str  # RECORD_TYPES のキー
-    cols: dict[str, int]  # 論理フィールド名 -> 列インデックス
+    fields: tuple[str, ...]  # このシートが持つ論理フィールド名（＝ヘッダ名）の並び
     people_field: str  # 著者フィルタ対象の人物列（論理名）
     title_field: str  # 主タイトル列（論理名）
     date_field: str = "date"  # 日付列（論理名）
@@ -45,82 +43,43 @@ class SheetSpec:
         return RECORD_TYPES[self.rtype]
 
 
-# 列インデックスは実データ（pub.xlsx）で確認済み。
+# 論理フィールドは Canonical のヘッダ名と一致する。
 SHEET_SPECS: list[SheetSpec] = [
     SheetSpec(
         keyword="Original Papers",
         rtype="paper",
-        cols={
-            "no": 0,
-            "date": 2,
-            "category": 3,
-            "peer_reviewed": 4,
-            "authors": 5,
-            "title": 6,
-            "journal": 7,
-            "journal_abbr": 8,
-            "volume": 9,
-            "issue": 10,
-            "pages": 11,
-            "doi": 12,
-        },
+        fields=(
+            "date", "category", "peer_reviewed", "authors", "title",
+            "journal", "journal_abbr", "volume", "issue", "pages", "doi",
+        ),
         people_field="authors",
         title_field="title",
     ),
     SheetSpec(
         keyword="Books",  # "著書、和文総説　Books, Japanese Reviews"
         rtype="book",
-        cols={
-            "no": 0,
-            "date": 2,
-            "international": 3,
-            "peer_reviewed": 4,
-            "authors": 5,
-            "review_title": 6,
-            "book_title": 7,
-            "chapter": 8,
-            "editor": 9,
-            "volume": 10,
-            "issue": 11,
-            "pages": 12,
-            "publisher": 13,
-            "doi": 14,
-            "issn": 15,
-            "isbn": 16,
-        },
+        fields=(
+            "date", "international", "peer_reviewed", "authors", "review_title",
+            "book_title", "chapter", "editor", "volume", "issue", "pages",
+            "publisher", "doi", "issn", "isbn",
+        ),
         people_field="authors",
         title_field="book_title",
     ),
     SheetSpec(
         keyword="presentations",  # "発表・講演 presentations"
         rtype="presentation",
-        cols={
-            "no": 0,
-            "date": 2,
-            "scope": 3,  # Domestic / International
-            "title": 4,
-            "authors": 5,
-            "conference": 6,
-            "symposium": 7,
-            "invited": 8,
-            "venue": 9,
-            "presentation_type": 12,  # Oral / Poster
-        },
+        fields=(
+            "date", "scope", "title", "authors", "conference",
+            "symposium", "invited", "venue", "presentation_type",
+        ),
         people_field="authors",
         title_field="title",
     ),
     SheetSpec(
         keyword="Awards",  # "受賞　Awards"
         rtype="award",
-        cols={
-            "no": 0,
-            "date": 2,
-            "scope": 3,
-            "authors": 4,  # 受賞者名
-            "title": 5,  # 賞タイトル
-            "awarded_study": 6,
-            "organization": 7,
-        },
+        fields=("date", "scope", "authors", "title", "awarded_study", "organization"),
         people_field="authors",
         title_field="title",
         numeric_fields=(),
@@ -128,14 +87,7 @@ SHEET_SPECS: list[SheetSpec] = [
     SheetSpec(
         keyword="Outreach",  # "アウトリーチ Outreach"
         rtype="outreach",
-        cols={
-            "no": 0,
-            "date": 2,
-            "scope": 3,
-            "authors": 4,  # 実施者
-            "title": 5,  # 活動概要
-            "venue": 6,
-        },
+        fields=("date", "scope", "authors", "title", "venue"),
         people_field="authors",
         title_field="title",
         numeric_fields=(),
@@ -143,15 +95,7 @@ SHEET_SPECS: list[SheetSpec] = [
     SheetSpec(
         keyword="Publicity",  # "報道パブリシティ　Publicity"
         rtype="publicity",
-        cols={
-            "no": 0,
-            "date": 2,
-            "media_type": 3,
-            "media_name": 4,
-            "authors": 5,  # 掲載人物
-            "title": 6,  # 掲載概要
-            "link": 7,
-        },
+        fields=("date", "media_type", "media_name", "authors", "title", "link"),
         people_field="authors",
         title_field="title",
         numeric_fields=(),

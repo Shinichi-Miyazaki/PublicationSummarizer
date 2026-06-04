@@ -100,6 +100,10 @@ def integration_tests(source) -> None:
     for rtype, label in RECORD_TYPES.items():
         print(f"    - {label}: {counts.get(rtype, 0)} 件")
 
+    # 品質ゲート: status=未確認 の行は読み込まれない。
+    titles = " ".join(df["title"].astype(str))
+    check("status gate excludes 未確認", "Unverified" not in titles)
+
     print("[integration] roster")
     roster = load_roster_sheet(source)
     members = parse_roster(roster)
@@ -142,14 +146,23 @@ def integration_tests(source) -> None:
     print("  " + (out["plain"].splitlines()[0] if out["plain"] else "(none)"))
 
 
+_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "canonical_sample.xlsx"
+
+
 def main() -> None:
     unit_tests()
     if len(sys.argv) > 1:
-        source = Path(sys.argv[1]).read_bytes()
-        print(f"\n[integration] using local fixture: {sys.argv[1]}")
+        arg = sys.argv[1]
+        # ローカルファイルならオフライン検証、それ以外は共有 URL/ID としてライブ取得。
+        if Path(arg).exists():
+            source = Path(arg).read_bytes()
+            print(f"\n[integration] using local file: {arg}")
+        else:
+            print(f"\n[integration] fetching live: {arg}")
+            source = load_workbook_bytes(arg)
     else:
-        print(f"\n[integration] fetching live: {DEFAULT_SHEET_ID}")
-        source = load_workbook_bytes(DEFAULT_SHEET_ID)
+        print(f"\n[integration] using bundled fixture: {_FIXTURE.name}")
+        source = _FIXTURE.read_bytes()
     integration_tests(source)
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")

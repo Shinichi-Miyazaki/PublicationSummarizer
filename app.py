@@ -37,7 +37,7 @@ from publication_summarizer.schema import SHEET_SPECS
 st.set_page_config(page_title="研究業績サマライザー / Publication Summarizer", layout="wide")
 
 NUMERIC_BY_TYPE = {s.rtype: s.numeric_fields for s in SHEET_SPECS}
-COLS_BY_TYPE = {s.rtype: list(s.cols.keys()) for s in SHEET_SPECS}
+COLS_BY_TYPE = {s.rtype: list(s.fields) for s in SHEET_SPECS}
 
 
 @st.cache_data(ttl=600, show_spinner="スプレッドシートを取得中…")
