@@ -83,33 +83,38 @@ function enrichSelectedDoi() {
   toast_(n + " 行を DOI で補完しました");
 }
 
-/** アクティブタブ内の重複（DOI/日付+タイトル）を再チェックし、後発行に note=dup_of を付ける。 */
+/** アクティブタブ内の重複を再チェックし、後発行に note=dup_of を付ける。 */
 function recheckDuplicates() {
   var sh = SpreadsheetApp.getActiveSheet();
   if (!TAB_TYPE[sh.getName()]) { toast_("record タブで実行してください"); return; }
+  var flagged = recheckSheet_(sh);
+  toast_(flagged < 0 ? "note 列がありません（先に DB を v2 化してください）"
+                     : flagged + " 件の重複候補に印を付けました");
+}
+
+/** 1 タブの重複を再チェックし note=dup_of を付ける。flagged 件数を返す（note 列なしは -1）。 */
+function recheckSheet_(sh) {
   var last = sh.getLastRow();
-  if (last < 3) { toast_("重複なし"); return; }
   var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   var col = {};
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
+  if (col.note == null) return -1;
+  if (last < 3) return 0;
   var data = sh.getRange(2, 1, last - 1, header.length).getValues();
   var seenDoi = {}, seenDt = {}, flagged = 0;
   for (var r = 0; r < data.length; r++) {
     var row = data[r];
-    function c(name) { return name in col ? row[col[name]] : ""; }
+    var c = function (name) { return name in col ? row[col[name]] : ""; };
     var t = String(c("title_ja") || c("title_en") || c("book_title_ja") || c("book_title_en") || "").trim();
     var doi = doiKeyOf_(c("doi"));
     var dt = dtKeyOf_(c("date"), t);
     var first = (doi && seenDoi[doi]) || seenDt[dt] || "";  // 一致した既存の record_id
     if (first) {
-      if (col.note != null) {
-        var note = String(row[col.note] || "");
-        var tag = "dup_of=" + first;
-        if (note.indexOf(tag) < 0) {
-          row[col.note] = note ? note + "; " + tag : tag;
-          sh.getRange(r + 2, col.note + 1).setValue(row[col.note]);
-          flagged++;
-        }
+      var note = String(row[col.note] || "");
+      var tag = "dup_of=" + first;
+      if (note.indexOf(tag) < 0) {
+        sh.getRange(r + 2, col.note + 1).setValue(note ? note + "; " + tag : tag);
+        flagged++;
       }
     } else {
       var rid = String(c("record_id") || "").trim() || ("行" + (r + 2));
@@ -117,21 +122,25 @@ function recheckDuplicates() {
       seenDt[dt] = rid;
     }
   }
-  toast_(flagged + " 件の重複候補に印を付けました");
+  return flagged;
 }
 
-/** 全 record タブに、未確認＝黄／重複候補＝赤 の条件付き書式を設定する。 */
+/** 全 record タブで重複を再チェックし、未確認＝黄背景／重複候補＝赤太字 の書式を設定する。 */
 function highlightAllTabs() {
   var ss = SpreadsheetApp.getActive();
-  var n = 0;
+  var n = 0, noNote = 0;
   Object.keys(TAB_TYPE).forEach(function (name) {
     var sh = ss.getSheetByName(name);
-    if (sh) { applyHighlighting_(sh); n++; }
+    if (!sh) return;
+    if (recheckSheet_(sh) === -1) noNote++;  // 先に dup_of を付けてから色付け
+    applyHighlighting_(sh);
+    n++;
   });
-  toast_(n + " タブに色分けを設定しました（未確認=黄, 重複候補=赤）");
+  toast_(n + " タブに色分けを設定しました（未確認=黄背景, 重複候補=赤太字）"
+    + (noNote ? "／" + noNote + " タブは note 列なし=重複色不可（v2 化が必要）" : ""));
 }
 
-/** 1 タブに条件付き書式を設定（status≠確認済→黄, note に dup_of→赤）。 */
+/** 1 タブに条件付き書式を設定（status≠確認済→黄背景, note に dup_of→赤太字）。 */
 function applyHighlighting_(sh) {
   var statusCol = headerCol_(sh, "status");
   var noteCol = headerCol_(sh, "note");
@@ -143,22 +152,24 @@ function applyHighlighting_(sh) {
   var idL = colLetter_(idCol + 1);
   var stL = colLetter_(statusCol + 1);
 
-  // このタブの条件付き書式は作り直す（黄=未確認, 赤=重複候補）。
+  // 作り直す。未確認＝黄背景／重複候補＝赤太字（別プロパティなので両立する）。
   var rules = [];
 
-  // 重複候補（note に dup_of）＝赤。先に評価されるよう先頭に。
+  // 未確認（status が「確認済」でない、かつ行が実在）＝黄背景。
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=AND($' + idL + '2<>"", $' + stL + '2<>"確認済")')
+    .setBackground("#FFF2CC")
+    .setRanges([range]).build());
+
+  // 重複候補（note に dup_of）＝赤の太字（背景の黄と重ねて表示できる）。
   if (noteCol >= 0) {
     var noL = colLetter_(noteCol + 1);
     rules.push(SpreadsheetApp.newConditionalFormatRule()
-      .whenFormulaSatisfied('=AND($' + idL + '2<>"", REGEXMATCH(TO_TEXT($' + noL + '2),"dup_of"))')
-      .setBackground("#F4CCCC")  // 薄い赤
+      .whenFormulaSatisfied('=REGEXMATCH(TO_TEXT($' + noL + '2), "dup_of")')
+      .setBold(true)
+      .setFontColor("#CC0000")
       .setRanges([range]).build());
   }
-  // 未確認（status が「確認済」でない、かつ行が実在）＝黄。
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenFormulaSatisfied('=AND($' + idL + '2<>"", $' + stL + '2<>"確認済")')
-    .setBackground("#FFF2CC")  // 薄い黄
-    .setRanges([range]).build());
 
   sh.setConditionalFormatRules(rules);
 }

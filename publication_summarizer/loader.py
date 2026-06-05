@@ -16,7 +16,7 @@ import requests
 from .schema import BILINGUAL_FIELDS, ROSTER_KEYWORD, SheetSpec, spec_for_sheet
 
 # 既定の対象スプレッドシート ID（研究室業績シート / Canonical）。
-DEFAULT_SHEET_ID = "15iim9QA0B64XiZV7h8MINq1h8SExKBrfgdy93WIW6dw"
+DEFAULT_SHEET_ID = "1jTb-oObbFf3TwQYBi4wJa-wy2182uMgfZ3nLaXhYrmw"
 
 _EXPORT_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
 _ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
