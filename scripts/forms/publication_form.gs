@@ -201,17 +201,39 @@ function buildForm() {
     page.setGoToPage(FormApp.PageNavigationType.SUBMIT);
   });
 
-  // 種別ラジオの各選択肢を、対応セクションへの分岐に設定。
+  // 一括貼り付けセクション（複数件をまとめて登録）。
+  var bulkPage = form.addPageBreakItem().setTitle("まとめて貼り付け / Bulk paste");
+  var bulkTypeItem = form.addListItem()
+    .setTitle("貼り付ける業績の種別 / Type of the pasted items")
+    .setHelpText("貼り付けるリストの種別を選んでください（1回の送信につき1種別）。")
+    .setRequired(true)
+    .setChoiceValues(TYPE_ORDER.map(function (t) { return typeChoiceText_(t); }));
+  var bulkTextItem = form.addParagraphTextItem()
+    .setTitle("業績リスト（researchmap 等からプレーンテキストで貼り付け） / Paste your list")
+    .setHelpText(
+      "1 件ずつ改行。1 件の並びは「タイトル → 著者 → 誌名/学会名＋日付」。\n" +
+      "末尾に日付がある行（例: 2025年7月 / Jul, 2025 / 2025/07）が 1 件の区切りです。\n" +
+      "Paste one item per block: Title / Authors / Journal-or-Conference + Date (date ends each item)."
+    )
+    .setRequired(true);
+  bulkPage.setGoToPage(FormApp.PageNavigationType.SUBMIT);
+
+  // 種別ラジオの各選択肢を、対応セクションへの分岐に設定（最後に一括貼り付け）。
+  var bulkChoiceLabel = "まとめて貼り付け（複数件を一度に） / Bulk paste (multiple at once)";
   var choices = TYPE_ORDER.map(function (type) {
     return typeItem.createChoice(typeChoiceText_(type), pageBreakByType[type]);
   });
+  choices.push(typeItem.createChoice(bulkChoiceLabel, bulkPage));
   typeItem.setChoices(choices);
 
   // 設問マップを保存（route が itemId から種別・フィールドを引く）。
   PropertiesService.getScriptProperties().setProperty(PROP_KEY, JSON.stringify({
     reporterId: String(reporterItem.getId()),
     typeId: String(typeItem.getId()),
-    items: itemMap
+    items: itemMap,
+    bulkChoiceLabel: bulkChoiceLabel,
+    bulkTypeId: String(bulkTypeItem.getId()),
+    bulkTextId: String(bulkTextItem.getId())
   }));
 
   installTrigger_(form);
@@ -294,13 +316,20 @@ function route(e) {
     byId[String(r.getItem().getId())] = r.getResponse();
   });
 
-  var typeLabel = byId[map.typeId];
-  var type = labelToType_(typeLabel);
-  if (!type) {
-    Logger.log("[route] 種別を判定できませんでした: " + typeLabel);
+  var reporter = byId[map.reporterId] || "";
+  var topLabel = byId[map.typeId];
+
+  // 一括貼り付けが選ばれた場合は、貼り付けテキストを解析して複数件を追記。
+  if (map.bulkChoiceLabel && topLabel === map.bulkChoiceLabel) {
+    routeBulk_(byId, map, reporter);
     return;
   }
-  var spec = FIELD_MAP[type];
+
+  var type = labelToType_(topLabel);
+  if (!type) {
+    Logger.log("[route] 種別を判定できませんでした: " + topLabel);
+    return;
+  }
 
   // この種別の論理フィールド値を収集。
   var values = {};
@@ -312,39 +341,55 @@ function route(e) {
   });
 
   var ss = SpreadsheetApp.openById(CANONICAL_SHEET_ID);
+  appendOne_(ss, type, values, reporter, SOURCE_LABEL);
+}
+
+/** 一括貼り付け: 種別を判定し、貼り付けテキストを解析して 1 件ずつ追記。 */
+function routeBulk_(byId, map, reporter) {
+  var type = labelToType_(byId[map.bulkTypeId]);
+  if (!type) {
+    Logger.log("[routeBulk] 種別を判定できませんでした: " + byId[map.bulkTypeId]);
+    return;
+  }
+  var text = String(byId[map.bulkTextId] || "");
+  var recs = parseRecords_(text, type);
+  var ss = SpreadsheetApp.openById(CANONICAL_SHEET_ID);
+  var n = 0;
+  recs.forEach(function (rec) {
+    appendOne_(ss, type, rec, reporter, "paste-form");
+    n++;
+  });
+  Logger.log("[routeBulk] " + type + " を " + n + " 件追記しました。");
+}
+
+/**
+ * 1 件を Canonical の該当タブへ追記する（DOI補完・重複フラグ・採番・status=未確認）。
+ * values は論理フィールド（_ja/_en）か base 名（title 等）でよい。base は言語で振り分ける。
+ */
+function appendOne_(ss, type, values, reporter, source) {
+  ensureBilingualValues_(values);
+  var spec = FIELD_MAP[type];
   var sheet = ss.getSheetByName(spec.tab);
   if (!sheet) {
-    Logger.log("[route] タブが見つかりません: " + spec.tab);
+    Logger.log("[appendOne] タブが見つかりません: " + spec.tab);
     return;
   }
 
-  // DOI から論文情報を自動補完（空欄のみ）。失敗時は黙って通常追記。
   var notes = [];
-  if (enrichFromDoi_(type, values)) {
-    notes.push("crossref");
-  }
+  if (enrichFromDoi_(type, values)) notes.push("crossref");
 
   var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-
-  // 重複検出（DOI、無ければ 日付+タイトル先頭）。見つかれば note にフラグして残す。
   var dupOf = findDuplicate_(sheet, header, values);
-  if (dupOf) {
-    notes.push("dup_of=" + dupOf);
-  }
-
-  var recordId = spec.prefix + "-" + pad4_(sheet.getLastRow()); // header 行込みの行数を採番に使う。
-  var reporter = byId[map.reporterId] || "";
+  if (dupOf) notes.push("dup_of=" + dupOf);
 
   var meta = {
-    record_id: recordId,
+    record_id: spec.prefix + "-" + pad4_(sheet.getLastRow()),
     status: APP_STATUS_NEW,
     submitter: reporter,
-    source: SOURCE_LABEL,
+    source: source,
     created_at: nowStamp_(),
     note: notes.join("; ")
   };
-
-  // シートのヘッダ順に合わせて 1 行組み立てる（列順変更にも追従）。
   var row = header.map(function (h) {
     var key = String(h).trim();
     if (key in meta) return meta[key];
@@ -364,6 +409,90 @@ function doiKeyOf_(doi) {
 }
 function dtKeyOf_(date, title) {
   return "dt:" + ymOf_(date) + "|" + String(title || "").trim().toLowerCase().slice(0, 40);
+}
+
+// ── 一括貼り付けの解析（ingest_paste.py の移植） ──────────────────
+var BILINGUAL_BASES = ["title", "journal", "journal_abbr", "book_title",
+                       "review_title", "conference", "symposium"];
+var PASTE_TITLE_FIELD = {paper: "title", book: "review_title", presentation: "title",
+                         award: "title", outreach: "title", publicity: "title"};
+var PASTE_VENUE_FIELD = {paper: "journal", book: "book_title", presentation: "conference",
+                         award: "organization", outreach: "venue", publicity: "media_name"};
+var EN_MONTHS = {jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+                 jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12};
+
+function hasCjk_(s) {
+  return /[぀-ヿ㐀-鿿ｦ-ﾟ]/.test(String(s || ""));
+}
+
+/** base 値（title 等）を本文の言語で _ja/_en に振り分ける（_ja/_en が既にあれば優先）。 */
+function ensureBilingualValues_(v) {
+  BILINGUAL_BASES.forEach(function (base) {
+    if (v[base] == null) return;
+    var val = String(v[base]).trim();
+    delete v[base];
+    if (!val) return;
+    var slot = base + (hasCjk_(val) ? "_ja" : "_en");
+    if (!String(v[slot] || "").trim()) v[slot] = val;
+  });
+}
+
+/** 行から日付を検出して {start, dateStr} を返す（日本語/英語/数値）。無ければ null。 */
+function findDate_(line) {
+  var cands = [];
+  var m = /(\d{4})年\s*(\d{1,2})月(?:\s*(\d{1,2})日)?/.exec(line);
+  if (m) cands.push({start: m.index, y: +m[1], mo: +m[2], d: m[3]});
+  m = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b[.,]?\s*(?:(\d{1,2})\s*,?\s*)?(\d{4})/i.exec(line);
+  if (m) cands.push({start: m.index, y: +m[3], mo: EN_MONTHS[m[1].toLowerCase().slice(0, 3)], d: m[2]});
+  m = /(\d{4})[\/\-.](\d{1,2})(?:[\/\-.](\d{1,2}))?/.exec(line);
+  if (m) cands.push({start: m.index, y: +m[1], mo: +m[2], d: m[3]});
+  if (!cands.length) return null;
+  cands.sort(function (a, b) { return a.start - b.start; });
+  var c = cands[0];
+  return {start: c.start, dateStr: c.d ? (c.y + "/" + c.mo + "/" + (+c.d)) : (c.y + "/" + c.mo)};
+}
+
+function looksLikeAuthors_(line) {
+  return line.indexOf(",") >= 0 || line.indexOf("，") >= 0 || line.indexOf("、") >= 0;
+}
+
+/** 日付より前の部分（誌名・巻号頁）を分解して rec に入れる。 */
+function parseSource_(head, rtype, rec) {
+  var venue = head;
+  if (rtype === "paper" || rtype === "book") {
+    var vi = /(\d+)\s*\(\s*(\d+)\s*\)/.exec(venue);
+    if (vi) { rec.volume = vi[1]; rec.issue = vi[2]; venue = venue.replace(vi[0], " "); }
+    var pg = /(\d+)\s*[-–—―]\s*(\d+)/.exec(venue);
+    if (pg) { rec.pages = pg[1] + "-" + pg[2]; venue = venue.replace(pg[0], " "); }
+  }
+  venue = venue.replace(/\s{2,}/g, " ").replace(/^[\s,，、]+|[\s,，、]+$/g, "");
+  if (venue) rec[PASTE_VENUE_FIELD[rtype]] = venue;
+}
+
+/** プレーンテキストを種別 rtype のレコード配列（base フィールド）へ解析。 */
+function parseRecords_(text, rtype) {
+  var lines = String(text).split(/\r?\n/).map(function (s) { return s.trim(); })
+    .filter(function (s) { return s.length; });
+  var records = [], buf = [];
+  var paperLike = (rtype === "paper" || rtype === "book");
+
+  lines.forEach(function (line) {
+    var f = findDate_(line);
+    if (!f) { buf.push(line); return; }
+    var rec = {date: f.dateStr};
+    parseSource_(line.slice(0, f.start), rtype, rec);
+    if (buf.length) {
+      if (buf.length >= 2 && (paperLike || looksLikeAuthors_(buf[buf.length - 1]))) {
+        rec.authors = buf[buf.length - 1];
+        rec[PASTE_TITLE_FIELD[rtype]] = buf.slice(0, -1).join(" ").replace(/[\s.。]+$/, "");
+      } else {
+        rec[PASTE_TITLE_FIELD[rtype]] = buf.join(" ").replace(/[\s.。]+$/, "");
+      }
+    }
+    if (rec[PASTE_TITLE_FIELD[rtype]] || rec.authors) records.push(rec);
+    buf = [];
+  });
+  return records;
 }
 
 /** values（新規）の代表タイトル（_ja 優先、無ければ _en、book は book_title）。 */
