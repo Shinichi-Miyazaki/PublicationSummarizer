@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -354,17 +355,35 @@ def _ym(value) -> str:
     return str(_cell_out(value)).strip()
 
 
-def _dup_keys(rec: dict) -> tuple[str | None, str]:
-    """重複検出キーの対 (doi_key, dt_key) を返す。
+def _clean_doi(value) -> str:
+    """DOI を比較用に正規化（doi: / https://doi.org/ などの接頭辞を除去）。"""
+    d = _s(value).lower()
+    d = re.sub(r"^\s*(https?://(dx\.)?doi\.org/|doi\s*[:：]\s*)", "", d)
+    return d.strip()
 
-    doi が一致、または「年月＋タイトル先頭」が一致すれば重複とみなす（どちらか一方でも可）。
-    これにより DOI 有無の混在（フォーム⇄貼り付け）や日付表記ゆれでも検出できる。
+
+def _norm_title(value) -> str:
+    """タイトル比較用に正規化（記号・空白を除去、小文字化。和文字は保持）。"""
+    return re.sub(r"[\W_]+", "", _s(value).lower())
+
+
+def _dup_keys(rec: dict, title_only: bool = False) -> set[str]:
+    """重複検出キーの集合を返す（いずれか一致で重複）。
+
+    - DOI（接頭辞を除去して比較）一致
+    - title_only（論文・著書）の場合は **タイトル一致のみ**でも重複（公開日と発行号で
+      日付が食い違うケースを拾う）
+    - それ以外は「年月＋タイトル先頭」一致
     """
-    doi = _s(rec.get("doi")).lower()
-    doi_key = f"doi:{doi}" if doi else None
-    title = _rec_title(rec).lower()[:40]
-    dt_key = f"dt:{_ym(rec.get('date', ''))}|{title}"
-    return doi_key, dt_key
+    keys: set[str] = set()
+    doi = _clean_doi(rec.get("doi"))
+    if doi:
+        keys.add(f"doi:{doi}")
+    nt = _norm_title(_rec_title(rec))
+    if title_only and len(nt) >= 8:
+        keys.add(f"t:{nt}")
+    keys.add(f"dt:{_ym(rec.get('date', ''))}|{nt[:40]}")
+    return keys
 
 
 def _read_existing(path: Path) -> dict[str, list[dict]]:
@@ -397,24 +416,19 @@ def write_canonical(out: Path, by_type: dict[str, list[dict]], source_label: str
 
     for rtype, new_recs in by_type.items():
         existing = base[rtype]
-        seen_doi: set[str] = set()
-        seen_dt: set[str] = set()
+        title_only = rtype in ("paper", "book")  # 論文・著書はタイトル一致のみでも重複
+        seen: set[str] = set()
         for r in existing:
-            dk, tk = _dup_keys(r)
-            if dk:
-                seen_doi.add(dk)
-            seen_dt.add(tk)
+            seen |= _dup_keys(r, title_only)
         prefix = ID_PREFIX[rtype]
         seq = _next_seq(existing)
         n_added = 0
         for rec in new_recs:
             rec = _ensure_bilingual(rec)
-            doi_key, dt_key = _dup_keys(rec)
-            if (doi_key and doi_key in seen_doi) or dt_key in seen_dt:
+            keys = _dup_keys(rec, title_only)
+            if keys & seen:
                 continue
-            if doi_key:
-                seen_doi.add(doi_key)
-            seen_dt.add(dt_key)
+            seen |= keys
             full = {f: _cell_out(rec.get(f, "")) for f in CANONICAL_FIELDS[rtype]}
             full.update({
                 "record_id": f"{prefix}-{seq:04d}",

@@ -100,15 +100,16 @@ function recheckSheet_(sh) {
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
   if (col.note == null) return -1;
   if (last < 3) return 0;
+  var titleOnly = (TAB_TYPE[sh.getName()] === "paper" || TAB_TYPE[sh.getName()] === "book");
   var data = sh.getRange(2, 1, last - 1, header.length).getValues();
-  var seenDoi = {}, seenDt = {}, flagged = 0;
+  var seen = {}, flagged = 0;  // key -> 既存の record_id
   for (var r = 0; r < data.length; r++) {
     var row = data[r];
     var c = function (name) { return name in col ? row[col[name]] : ""; };
     var t = String(c("title_ja") || c("title_en") || c("book_title_ja") || c("book_title_en") || "").trim();
-    var doi = doiKeyOf_(c("doi"));
-    var dt = dtKeyOf_(c("date"), t);
-    var first = (doi && seenDoi[doi]) || seenDt[dt] || "";  // 一致した既存の record_id
+    var keys = dupKeysOf_(c("doi"), c("date"), t, titleOnly);
+    var first = "";
+    for (var j = 0; j < keys.length; j++) { if (seen[keys[j]]) { first = seen[keys[j]]; break; } }
     if (first) {
       var note = String(row[col.note] || "");
       var tag = "dup_of=" + first;
@@ -118,21 +119,20 @@ function recheckSheet_(sh) {
       }
     } else {
       var rid = String(c("record_id") || "").trim() || ("行" + (r + 2));
-      if (doi) seenDoi[doi] = rid;
-      seenDt[dt] = rid;
+      keys.forEach(function (k) { if (!seen[k]) seen[k] = rid; });
     }
   }
   return flagged;
 }
 
-/** 全 record タブで重複を再チェックし、未確認＝黄背景／重複候補＝赤太字 の書式を設定する。 */
+/** 全 record タブで重複を再判定し、未確認＝黄背景／重複候補＝赤太字 の書式を設定する。 */
 function highlightAllTabs() {
   var ss = SpreadsheetApp.getActive();
   var n = 0, noNote = 0;
   Object.keys(TAB_TYPE).forEach(function (name) {
     var sh = ss.getSheetByName(name);
     if (!sh) return;
-    if (recheckSheet_(sh) === -1) noNote++;  // 先に dup_of を付けてから色付け
+    if (recheckSheet_(sh) === -1) noNote++;  // 先に dup_of を付けてから着色
     applyHighlighting_(sh);
     n++;
   });
@@ -155,13 +155,11 @@ function applyHighlighting_(sh) {
   // 作り直す。未確認＝黄背景／重複候補＝赤太字（別プロパティなので両立する）。
   var rules = [];
 
-  // 未確認（status が「確認済」でない、かつ行が実在）＝黄背景。
   rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenFormulaSatisfied('=AND($' + idL + '2<>"", $' + stL + '2<>"確認済")')
     .setBackground("#FFF2CC")
     .setRanges([range]).build());
 
-  // 重複候補（note に dup_of）＝赤の太字（背景の黄と重ねて表示できる）。
   if (noteCol >= 0) {
     var noL = colLetter_(noteCol + 1);
     rules.push(SpreadsheetApp.newConditionalFormatRule()
@@ -210,12 +208,22 @@ function ymOf_(s) {
   var m = String(s || "").match(/(\d{4})\D+(\d{1,2})/);
   return m ? (m[1] + "/" + ("0" + m[2]).slice(-2)) : String(s || "").trim();
 }
-function doiKeyOf_(doi) {
-  doi = String(doi || "").trim().toLowerCase();
-  return doi ? ("doi:" + doi) : "";
+function cleanDoi_(doi) {
+  var d = String(doi || "").trim().toLowerCase();
+  return d.replace(/^\s*(https?:\/\/(dx\.)?doi\.org\/|doi\s*[:：]\s*)/, "").trim();
 }
-function dtKeyOf_(date, title) {
-  return "dt:" + ymOf_(date) + "|" + String(title || "").trim().toLowerCase().slice(0, 40);
+function normTitle_(t) {
+  return String(t || "").toLowerCase().replace(/[^0-9a-z぀-ヿ㐀-鿿]/g, "");
+}
+/** 重複検出キーの配列（いずれか一致で重複）。論文・著書はタイトル一致のみでも重複。 */
+function dupKeysOf_(doi, date, title, titleOnly) {
+  var keys = [];
+  var cd = cleanDoi_(doi);
+  if (cd) keys.push("doi:" + cd);
+  var nt = normTitle_(title);
+  if (titleOnly && nt.length >= 8) keys.push("t:" + nt);
+  keys.push("dt:" + ymOf_(date) + "|" + nt.slice(0, 40));
+  return keys;
 }
 
 function fetchCrossref_(doi) {

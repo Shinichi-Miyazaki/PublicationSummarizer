@@ -379,7 +379,7 @@ function appendOne_(ss, type, values, reporter, source) {
   if (enrichFromDoi_(type, values)) notes.push("crossref");
 
   var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var dupOf = findDuplicate_(sheet, header, values);
+  var dupOf = findDuplicate_(sheet, header, values, type);
   if (dupOf) notes.push("dup_of=" + dupOf);
 
   var meta = {
@@ -403,12 +403,22 @@ function ymOf_(s) {
   var m = String(s || "").match(/(\d{4})\D+(\d{1,2})/);
   return m ? (m[1] + "/" + ("0" + m[2]).slice(-2)) : String(s || "").trim();
 }
-function doiKeyOf_(doi) {
-  doi = String(doi || "").trim().toLowerCase();
-  return doi ? ("doi:" + doi) : "";
+function cleanDoi_(doi) {
+  var d = String(doi || "").trim().toLowerCase();
+  return d.replace(/^\s*(https?:\/\/(dx\.)?doi\.org\/|doi\s*[:：]\s*)/, "").trim();
 }
-function dtKeyOf_(date, title) {
-  return "dt:" + ymOf_(date) + "|" + String(title || "").trim().toLowerCase().slice(0, 40);
+function normTitle_(t) {
+  return String(t || "").toLowerCase().replace(/[^0-9a-z぀-ヿ㐀-鿿]/g, "");
+}
+/** 重複検出キーの配列（いずれか一致で重複）。論文・著書はタイトル一致のみでも重複。 */
+function dupKeysOf_(doi, date, title, titleOnly) {
+  var keys = [];
+  var cd = cleanDoi_(doi);
+  if (cd) keys.push("doi:" + cd);
+  var nt = normTitle_(title);
+  if (titleOnly && nt.length >= 8) keys.push("t:" + nt);
+  keys.push("dt:" + ymOf_(date) + "|" + nt.slice(0, 40));
+  return keys;
 }
 
 // ── 一括貼り付けの解析（ingest_paste.py の移植） ──────────────────
@@ -505,24 +515,25 @@ function recTitleOf_(v) {
   return "";
 }
 
-/** 既存行を走査し、重複（DOI 一致 or 年月+タイトル一致）する行の record_id を返す。 */
-function findDuplicate_(sheet, header, values) {
+/** 既存行を走査し、重複（DOI / タイトル / 年月+タイトル のいずれか一致）行の record_id を返す。 */
+function findDuplicate_(sheet, header, values, type) {
   var last = sheet.getLastRow();
   if (last < 2) return "";
   var col = {};
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
-  var newDoi = doiKeyOf_(values.doi);
-  var newDt = dtKeyOf_(values.date, recTitleOf_(values));
+  var titleOnly = (type === "paper" || type === "book");
+  var newKeys = {};
+  dupKeysOf_(values.doi, values.date, recTitleOf_(values), titleOnly)
+    .forEach(function (k) { newKeys[k] = true; });
   var data = sheet.getRange(2, 1, last - 1, header.length).getValues();
   for (var r = 0; r < data.length; r++) {
     var row = data[r];
-    function cell(name) { return name in col ? row[col[name]] : ""; }
+    var cell = function (name) { return name in col ? row[col[name]] : ""; };
     var t = String(cell("title_ja") || cell("title_en") ||
                    cell("book_title_ja") || cell("book_title_en") || "").trim();
-    var doi = doiKeyOf_(cell("doi"));
-    var dt = dtKeyOf_(cell("date"), t);
-    if ((newDoi && doi === newDoi) || dt === newDt) {
-      return String(cell("record_id") || "").trim() || "(既存)";
+    var keys = dupKeysOf_(cell("doi"), cell("date"), t, titleOnly);
+    for (var j = 0; j < keys.length; j++) {
+      if (newKeys[keys[j]]) return String(cell("record_id") || "").trim() || "(既存)";
     }
   }
   return "";

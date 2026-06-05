@@ -136,21 +136,34 @@ def v2_tests() -> None:
     ing = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ing)
 
-    print("[v2] 重複検出（DOI有無の混在・日付表記ゆれを横断）")
+    print("[v2] 重複検出（DOI正規化・月違い・タイトル一致を横断）")
+    check("JP日付パース 2021年12月", str(_parse_date("2021年12月").date()) == "2021-12-01")
+    check("DOI接頭辞除去", ing._clean_doi("doi: 10.1/ABC") == "10.1/abc"
+          and ing._clean_doi("https://doi.org/10.2/x") == "10.2/x")
     ddir = Path(__file__).resolve().parent
     dpath = ddir / "_v2_dup.xlsx"
     try:
+        import pandas as pd2
+        # 論文: DOI有無の混在・月違い(4月/7月)・末尾ピリオド差 でも同一タイトルなら集約。
         a = {"date": "2025/7", "title": "Circular RNA biomarker", "authors": "Miyazaki S"}
         b = {"date": "2025/07/15", "title": "Circular RNA biomarker", "authors": "Miyazaki S",
              "doi": "10.1/abc"}
-        c = dict(a)
+        d = {"date": "2025/4/21", "title": "Circular RNA biomarker.", "authors": "Miyazaki S",
+             "doi": "doi: 10.1/ABC"}
         ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [a]},
                             "paste", "未確認")
-        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [b, c]},
+        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [b, dict(a), d]},
                             "paste", "未確認", append_to=dpath)
-        import pandas as pd2
         ddf = pd2.read_excel(dpath, sheet_name="Original Papers")
-        check("同一論文は1件に集約（DOI有無・日付ゆれ横断）", len(ddf) == 1, f"rows={len(ddf)}")
+        check("論文: 同一タイトルは1件に集約（月違い・DOIゆれ横断）", len(ddf) == 1, f"rows={len(ddf)}")
+
+        # 発表: 同名講演を別日に行うのは正当 → タイトル一致のみでは集約しない。
+        p1 = {"date": "2024/8", "title": "睡眠の制御機構", "authors": "Miyazaki S"}
+        p2 = {"date": "2023/8", "title": "睡眠の制御機構", "authors": "Miyazaki S"}
+        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "presentation": [p1, p2]},
+                            "paste", "未確認", append_to=dpath)
+        pdf = pd2.read_excel(dpath, sheet_name="presentations")
+        check("発表: 同名でも別日なら2件保持", len(pdf) == 2, f"rows={len(pdf)}")
     finally:
         if dpath.exists():
             dpath.unlink()
