@@ -21,3 +21,6 @@ Thumbs.db
 
 # ローカル検証用に取得した業績データ（コミットしない）
 *.xlsx
+# ただしテスト用フィクスチャ（合成データ）はコミットする
+!tests/fixtures/
+!tests/fixtures/*.xlsx
