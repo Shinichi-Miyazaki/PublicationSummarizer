@@ -400,6 +400,8 @@ function appendOne_(ss, type, values, reporter, source) {
     notes.push("crossref-title");
   }
   if (enrichFromDoi_(type, values)) notes.push("crossref");
+  // 書籍は ISBN から書名・出版社・出版日を補完（OpenLibrary）。
+  if (type === "book" && enrichFromIsbn_(values)) notes.push("openlibrary");
 
   var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   var dupOf = findDuplicate_(sheet, header, values, type);
@@ -755,6 +757,41 @@ function enrichFromDoi_(type, values) {
 function pad2_(n) {
   var s = String(n);
   return s.length < 2 ? "0" + s : s;
+}
+
+/** 書籍: ISBN から OpenLibrary で書名・出版社・出版日の空欄を補完。補完したら true。 */
+function enrichFromIsbn_(values) {
+  var isbn = String(values.isbn || "").replace(/[^0-9Xx]/g, "");
+  if (isbn.length < 10) return false;
+  var book;
+  try {
+    var resp = UrlFetchApp.fetch(
+      "https://openlibrary.org/api/books?bibkeys=ISBN:" + isbn + "&format=json&jscmd=data",
+      {muteHttpExceptions: true, followRedirects: true});
+    if (resp.getResponseCode() !== 200) return false;
+    book = JSON.parse(resp.getContentText())["ISBN:" + isbn];
+  } catch (err) {
+    return false;
+  }
+  if (!book) return false;
+
+  function setIfEmpty(k, v) { if (v && !String(values[k] || "").trim()) values[k] = v; }
+  var title = book.title || "";
+  if (title) setIfEmpty(hasCjk_(title) ? "book_title_ja" : "book_title_en", title);
+  setIfEmpty("publisher", (book.publishers && book.publishers.length) ? book.publishers[0].name : "");
+  setIfEmpty("date", isbnDate_(book.publish_date));
+  return true;
+}
+
+/** "2015" / "March 2015" / "2015-03-01" 等を "YYYY[/M[/D]]" へ正規化（不明は ""）。 */
+function isbnDate_(s) {
+  s = String(s || "");
+  var ym = /(\d{4})[\/\-.](\d{1,2})(?:[\/\-.](\d{1,2}))?/.exec(s);
+  if (ym) return ym[1] + "/" + (+ym[2]) + (ym[3] ? ("/" + (+ym[3])) : "");
+  var en = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{4})/i.exec(s);
+  if (en) return en[2] + "/" + EN_MONTHS[en[1].toLowerCase().slice(0, 3)];
+  var y = /(\d{4})/.exec(s);
+  return y ? y[1] : "";
 }
 
 /** 表示ラベル（日英併記 or 旧・日本語のみ）から内部種別キーを引く。 */

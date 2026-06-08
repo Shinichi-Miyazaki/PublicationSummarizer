@@ -33,11 +33,11 @@ function onOpen() {
     .addItem("選択行を承認(確認済)", "approveSelected")
     .addItem("選択行を未確認に戻す", "unapproveSelected")
     .addSeparator()
+    .addItem("★ まとめて点検（重複・欠損・色分け → レポート）", "runAllChecks")
+    .addSeparator()
     .addItem("選択行を DOI で補完", "enrichSelectedDoi")
     .addItem("選択行をタイトルで補完(DOI検索)", "enrichSelectedByTitle")
-    .addItem("このタブの重複を再チェック", "recheckDuplicates")
-    .addSeparator()
-    .addItem("色分けを設定（全タブ）", "highlightAllTabs")
+    .addItem("選択行を ISBN で補完(書籍)", "enrichSelectedIsbn")
     .addSeparator()
     .addItem("一括下書き: シートを準備", "stagingSetup")
     .addItem("一括下書き: 表に展開", "stagingExpand")
@@ -171,6 +171,77 @@ function resolveDoiByTitle_(title, authors) {
   return "";
 }
 
+/**
+ * 選択行を ISBN で補完（書籍のみ）。OpenLibrary から書名・出版社・出版日を取得し空欄を補完。
+ */
+function enrichSelectedIsbn() {
+  var sh = SpreadsheetApp.getActiveSheet();
+  if (TAB_TYPE[sh.getName()] !== "book") { toast_("ISBN 補完は書籍タブのみ対応です"); return; }
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var col = {};
+  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
+  if (!("isbn" in col)) { toast_("isbn 列がありません"); return; }
+  var n = 0;
+  eachSelectedDataRow_(sh, function (r) {
+    var rowRange = sh.getRange(r, 1, 1, header.length);
+    var row = rowRange.getValues()[0];
+    var isbn = String(row[col.isbn] || "").trim();
+    if (!isbn) return;
+    var book = fetchBookByIsbn_(isbn);
+    if (!book) return;
+    if (fillRowFromBook_(row, col, book)) {
+      if (col.note != null) {
+        var note = String(row[col.note] || "");
+        if (note.indexOf("openlibrary") < 0) row[col.note] = note ? note + "; openlibrary" : "openlibrary";
+      }
+      rowRange.setValues([row]);
+      n++;
+    }
+  });
+  toast_(n + " 行を ISBN で補完しました");
+}
+
+/** OpenLibrary から ISBN で書誌を取得（なければ null）。 */
+function fetchBookByIsbn_(isbn) {
+  var key = String(isbn || "").replace(/[^0-9Xx]/g, "");
+  if (key.length < 10) return null;
+  try {
+    var url = "https://openlibrary.org/api/books?bibkeys=ISBN:" + key + "&format=json&jscmd=data";
+    var resp = UrlFetchApp.fetch(url, {muteHttpExceptions: true, followRedirects: true});
+    if (resp.getResponseCode() !== 200) return null;
+    return JSON.parse(resp.getContentText())["ISBN:" + key] || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** OpenLibrary の書誌で row の空セル（書名・出版社・出版日）を埋める。埋めたら true。 */
+function fillRowFromBook_(row, col, book) {
+  var changed = false;
+  function setIfEmpty(name, v) {
+    if (v && col[name] != null && !String(row[col[name]] || "").trim()) {
+      row[col[name]] = v; changed = true;
+    }
+  }
+  var title = book.title || "";
+  if (title) setIfEmpty(hasCjk_(title) ? "book_title_ja" : "book_title_en", title);
+  var pub = (book.publishers && book.publishers.length) ? book.publishers[0].name : "";
+  setIfEmpty("publisher", pub);
+  setIfEmpty("date", parseLooseDate_(book.publish_date));
+  return changed;
+}
+
+/** "2015" / "March 2015" / "2015-03-01" 等を "YYYY[/M[/D]]" へ正規化（不明は ""）。 */
+function parseLooseDate_(s) {
+  s = String(s || "");
+  var ym = /(\d{4})[\/\-.](\d{1,2})(?:[\/\-.](\d{1,2}))?/.exec(s);
+  if (ym) return ym[1] + "/" + (+ym[2]) + (ym[3] ? ("/" + (+ym[3])) : "");
+  var en = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{4})/i.exec(s);
+  if (en) return en[2] + "/" + EN_MONTHS[en[1].toLowerCase().slice(0, 3)];
+  var y = /(\d{4})/.exec(s);
+  return y ? y[1] : "";
+}
+
 /** アクティブタブ内の重複を再チェックし、後発行に note=dup_of を付ける。 */
 function recheckDuplicates() {
   var sh = SpreadsheetApp.getActiveSheet();
@@ -213,6 +284,198 @@ function recheckSheet_(sh) {
   return flagged;
 }
 
+/**
+ * アクティブタブの重複候補を一覧表示する（「どれとどれが重複か」を明示）。
+ * 先に dup_of を最新化し、各重複行とその一致先 record_id・タイトルをまとめて alert に出す。
+ */
+function showDuplicateReport() {
+  var sh = SpreadsheetApp.getActiveSheet();
+  if (!TAB_TYPE[sh.getName()]) { toast_("record タブで実行してください"); return; }
+  if (recheckSheet_(sh) === -1) { toast_("note 列がありません（先に DB を v2 化してください）"); return; }
+  var last = sh.getLastRow();
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var col = {};
+  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
+  if (last < 2) { toast_("データがありません"); return; }
+  var data = sh.getRange(2, 1, last - 1, header.length).getValues();
+  // record_id → タイトル の対応（一致先のタイトル表示に使う）。
+  var titleById = {};
+  for (var r = 0; r < data.length; r++) {
+    var row = data[r];
+    var rid = String(row[col.record_id] || "").trim();
+    if (rid) titleById[rid] = rowTitle_(row, col);
+  }
+  var lines = [];
+  for (var r2 = 0; r2 < data.length; r2++) {
+    var row2 = data[r2];
+    var note = String(col.note != null ? row2[col.note] : "");
+    var m = /dup_of=([^;]+)/.exec(note);
+    if (!m) continue;
+    var target = m[1].trim();
+    var rid2 = String(row2[col.record_id] || "").trim() || ("行" + (r2 + 2));
+    lines.push(rid2 + " ⇔ " + target + "： 「" + (titleById[rid2] || "") + "」");
+  }
+  if (!lines.length) { toast_("重複候補はありません"); return; }
+  SpreadsheetApp.getUi().alert(
+    "重複候補（" + lines.length + " 件）",
+    "下記は重複の可能性がある行です（左 ⇔ 一致先）。確認のうえ、不要な行を削除してください。\n\n"
+      + lines.join("\n"),
+    SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+/** 行の代表タイトル（title_ja/en・book_title_ja/en の順で最初に埋まっているもの）。 */
+function rowTitle_(row, col) {
+  var keys = ["title_ja", "title_en", "book_title_ja", "book_title_en"];
+  for (var i = 0; i < keys.length; i++) {
+    if (col[keys[i]] != null) {
+      var v = String(row[col[keys[i]]] || "").trim();
+      if (v) return v;
+    }
+  }
+  return "";
+}
+
+// ── 欠損値チェック ───────────────────────────────────────────────
+// 種別ごとの必須グループ（各グループは「いずれか 1 列が埋まっていれば OK」）。
+// publication_form.gs の required:true 設問と整合（二ヶ国語は _ja/_en のどちらかで可）。
+var REQUIRED_GROUPS = {
+  paper: [["date"], ["category"], ["peer_reviewed"], ["authors"],
+          ["title_ja", "title_en"], ["journal_ja", "journal_en"]],
+  book: [["date"], ["international"], ["authors"], ["book_title_ja", "book_title_en"]],
+  presentation: [["date"], ["scope"], ["title_ja", "title_en"], ["authors"],
+                 ["conference_ja", "conference_en"]],
+  award: [["date"], ["scope"], ["authors"], ["title_ja", "title_en"]],
+  outreach: [["date"], ["scope"], ["authors"], ["title_ja", "title_en"]],
+  publicity: [["date"], ["media_type"], ["media_name"], ["authors"], ["title_ja", "title_en"]]
+};
+
+/** その行に欠けている必須項目（base 名）の配列を返す。 */
+function missingFieldsOf_(type, cell) {
+  var groups = REQUIRED_GROUPS[type] || [];
+  var miss = [];
+  groups.forEach(function (g) {
+    var ok = g.some(function (c) { return String(cell(c) || "").trim(); });
+    if (!ok) miss.push(g[0].replace(/_(ja|en)$/, ""));
+  });
+  return miss;
+}
+
+/** note 内の "key=..." トークンを置換（value 空なら除去）。他のタグ・手書きメモは保持。 */
+function setNoteTag_(note, key, value) {
+  var parts = String(note || "").split(/;\s*/).filter(function (p) {
+    return p && p !== key && p.indexOf(key + "=") !== 0;
+  });
+  if (value) parts.push(key + "=" + value);
+  return parts.join("; ");
+}
+
+/** アクティブタブの欠損を再チェックし note に missing= を付け直す。 */
+function recheckMissing() {
+  var sh = SpreadsheetApp.getActiveSheet();
+  if (!TAB_TYPE[sh.getName()]) { toast_("record タブで実行してください"); return; }
+  var flagged = recheckMissingSheet_(sh);
+  toast_(flagged < 0 ? "note 列がありません（先に DB を v2 化してください）"
+                     : flagged + " 件に欠損があります（note の missing= と橙背景が目印）");
+}
+
+/** 1 タブの欠損を再判定し note の missing= を更新。欠損のある行数を返す（note 列なしは -1）。 */
+function recheckMissingSheet_(sh) {
+  var type = TAB_TYPE[sh.getName()];
+  var last = sh.getLastRow();
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var col = {};
+  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
+  if (col.note == null) return -1;
+  if (last < 2) return 0;
+  var data = sh.getRange(2, 1, last - 1, header.length).getValues();
+  var flagged = 0;
+  for (var r = 0; r < data.length; r++) {
+    var row = data[r];
+    var cell = function (name) { return name in col ? row[col[name]] : ""; };
+    if (!String(cell("record_id") || "").trim()) continue;  // 空行は対象外
+    var miss = missingFieldsOf_(type, cell);
+    var newNote = setNoteTag_(row[col.note], "missing", miss.join("|"));
+    if (newNote !== String(row[col.note] || "")) {
+      sh.getRange(r + 2, col.note + 1).setValue(newNote);
+    }
+    if (miss.length) flagged++;
+  }
+  return flagged;
+}
+
+var REPORT_SHEET = "点検レポート";
+
+/**
+ * ワンクリック総点検: 全 record タブで「重複・欠損の再判定 → 色分け」を行い、
+ * 問題行を 1 枚の「点検レポート」シートへ一覧出力する（チェック者はこれだけ見ればよい）。
+ */
+function runAllChecks() {
+  var ss = SpreadsheetApp.getActive();
+  var report = [];  // [タブ, record_id, 種類, 詳細, タイトル]
+  var dupTotal = 0, missTotal = 0, noNote = 0;
+  Object.keys(TAB_TYPE).forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (!sh) return;
+    if (recheckSheet_(sh) === -1) { noNote++; return; }  // note 列なしはスキップ
+    recheckMissingSheet_(sh);
+    applyHighlighting_(sh);
+
+    var last = sh.getLastRow();
+    if (last < 2) return;
+    var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    var col = {};
+    for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
+    var data = sh.getRange(2, 1, last - 1, header.length).getValues();
+    // record_id → タイトル（重複の一致先タイトルを併記するため）。
+    var titleById = {};
+    data.forEach(function (row) {
+      var rid = String(row[col.record_id] || "").trim();
+      if (rid) titleById[rid] = rowTitle_(row, col);
+    });
+    data.forEach(function (row) {
+      var rid = String(row[col.record_id] || "").trim();
+      if (!rid) return;
+      var note = String(col.note != null ? row[col.note] : "");
+      var title = rowTitle_(row, col);
+      var dm = /dup_of=([^;]+)/.exec(note);
+      if (dm) {
+        var tgt = dm[1].trim();
+        report.push([name, rid, "重複", "→ " + tgt + "：「" + (titleById[tgt] || "") + "」", title]);
+        dupTotal++;
+      }
+      var mm = /missing=([^;]+)/.exec(note);
+      if (mm) {
+        report.push([name, rid, "欠損", mm[1].trim(), title]);
+        missTotal++;
+      }
+    });
+  });
+
+  writeCheckReport_(ss, report);
+  var msg = "点検完了：重複 " + dupTotal + " 件・欠損 " + missTotal + " 件。"
+    + "『" + REPORT_SHEET + "』シートに一覧を出しました（色分けも更新）。";
+  if (noNote) msg += "／note 列なし " + noNote + " タブはスキップ（v2 化が必要）";
+  toast_(msg);
+  if (report.length) {
+    SpreadsheetApp.setActiveSheet(ss.getSheetByName(REPORT_SHEET));
+  }
+}
+
+/** 点検結果を「点検レポート」シートへ書き出す（毎回作り直し）。 */
+function writeCheckReport_(ss, rows) {
+  var sh = ss.getSheetByName(REPORT_SHEET) || ss.insertSheet(REPORT_SHEET);
+  sh.clear();
+  var header = ["タブ", "record_id", "種類", "詳細（重複の一致先 / 欠損項目）", "タイトル"];
+  sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight("bold");
+  if (rows.length) {
+    sh.getRange(2, 1, rows.length, header.length).setValues(rows);
+  } else {
+    sh.getRange(2, 1).setValue("問題は見つかりませんでした 🎉");
+  }
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, header.length);
+}
+
 /** 全 record タブで重複を再判定し、未確認＝黄背景／重複候補＝赤太字 の書式を設定する。 */
 function highlightAllTabs() {
   var ss = SpreadsheetApp.getActive();
@@ -220,15 +483,16 @@ function highlightAllTabs() {
   Object.keys(TAB_TYPE).forEach(function (name) {
     var sh = ss.getSheetByName(name);
     if (!sh) return;
-    if (recheckSheet_(sh) === -1) noNote++;  // 先に dup_of を付けてから着色
+    if (recheckSheet_(sh) === -1) noNote++;  // 先に dup_of・missing を付けてから着色
+    recheckMissingSheet_(sh);
     applyHighlighting_(sh);
     n++;
   });
-  toast_(n + " タブに色分けを設定しました（未確認=黄背景, 重複候補=赤太字）"
-    + (noNote ? "／" + noNote + " タブは note 列なし=重複色不可（v2 化が必要）" : ""));
+  toast_(n + " タブに色分けを設定しました（欠損=橙背景, 未確認=黄背景, 重複候補=赤太字）"
+    + (noNote ? "／" + noNote + " タブは note 列なし=色付け不可（v2 化が必要）" : ""));
 }
 
-/** 1 タブに条件付き書式を設定（status≠確認済→黄背景, note に dup_of→赤太字）。 */
+/** 1 タブに条件付き書式を設定（欠損→橙背景, status≠確認済→黄背景, note に dup_of→赤太字）。 */
 function applyHighlighting_(sh) {
   var statusCol = headerCol_(sh, "status");
   var noteCol = headerCol_(sh, "note");
@@ -240,8 +504,17 @@ function applyHighlighting_(sh) {
   var idL = colLetter_(idCol + 1);
   var stL = colLetter_(statusCol + 1);
 
-  // 作り直す。未確認＝黄背景／重複候補＝赤太字（別プロパティなので両立する）。
+  // 背景は先に一致したルールが勝つ。欠損(橙)を未確認(黄)より優先。重複は赤太字(フォント)で両立。
   var rules = [];
+
+  if (noteCol >= 0) {
+    var noL = colLetter_(noteCol + 1);
+    // 欠損あり＝橙背景（未確認の黄より優先して目立たせる）。
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=REGEXMATCH(TO_TEXT($' + noL + '2), "missing=")')
+      .setBackground("#FCE5CD")
+      .setRanges([range]).build());
+  }
 
   rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenFormulaSatisfied('=AND($' + idL + '2<>"", $' + stL + '2<>"確認済")')
@@ -249,9 +522,9 @@ function applyHighlighting_(sh) {
     .setRanges([range]).build());
 
   if (noteCol >= 0) {
-    var noL = colLetter_(noteCol + 1);
+    var noL2 = colLetter_(noteCol + 1);
     rules.push(SpreadsheetApp.newConditionalFormatRule()
-      .whenFormulaSatisfied('=REGEXMATCH(TO_TEXT($' + noL + '2), "dup_of")')
+      .whenFormulaSatisfied('=REGEXMATCH(TO_TEXT($' + noL2 + '2), "dup_of")')
       .setBold(true)
       .setFontColor("#CC0000")
       .setRanges([range]).build());
