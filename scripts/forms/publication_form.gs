@@ -103,7 +103,7 @@ var FIELD_MAP = {
       {"field": "symposium_en", "title": "シンポジウム名（English・任意）", "title_en": "Symposium (English, optional)", "type": "text", "required": false},
       {"field": "invited", "title": "招待の有無", "title_en": "Invited", "type": "radio", "required": false, "choices": ["招待あり", "招待なし"], "help": "招待あり = Invited / 招待なし = Not invited"},
       {"field": "venue", "title": "開催地", "title_en": "Venue", "type": "text", "required": false, "help": "例 / e.g. 横浜 / Yokohama"},
-      {"field": "presentation_type", "title": "発表形式", "title_en": "Presentation type", "type": "radio", "required": false, "choices": ["口頭", "ポスター"], "help": "口頭 = Oral / ポスター = Poster"}
+      {"field": "presentation_type", "title": "発表形式", "title_en": "Presentation type", "type": "radio", "required": false, "choices": ["口頭", "ポスター", "口頭＆ポスター"], "help": "口頭 = Oral / ポスター = Poster / 口頭＆ポスター = Oral & poster（両方の場合）"}
     ]
   },
   "award": {
@@ -376,6 +376,10 @@ function appendOne_(ss, type, values, reporter, source) {
   }
 
   var notes = [];
+  // 論文で DOI 未入力なら、タイトル（＋著者）で CrossRef を検索して DOI を特定する。
+  if (type === "paper" && !String(values.doi || "").trim() && resolveDoiByTitle_(values)) {
+    notes.push("crossref-title");
+  }
   if (enrichFromDoi_(type, values)) notes.push("crossref");
 
   var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
@@ -537,6 +541,53 @@ function findDuplicate_(sheet, header, values, type) {
     }
   }
   return "";
+}
+
+/** タイトルを単語トークンへ分解（小文字化・記号→空白・CJK は1トークン）。 */
+function titleTokens_(s) {
+  return String(s || "").toLowerCase()
+    .replace(/[^0-9a-z぀-ヿ㐀-鿿]+/g, " ").trim()
+    .split(/\s+/).filter(function (w) { return w.length; });
+}
+
+/** 2 つのタイトルが十分に一致するか（トークン Jaccard >= 0.6）。誤マッチ防止用。 */
+function titleSimilar_(a, b) {
+  var ta = titleTokens_(a), tb = titleTokens_(b);
+  if (!ta.length || !tb.length) return false;
+  var setB = {}; tb.forEach(function (w) { setB[w] = true; });
+  var inter = 0, seen = {};
+  ta.forEach(function (w) { if (setB[w] && !seen[w]) { inter++; seen[w] = true; } });
+  var uni = {}; ta.concat(tb).forEach(function (w) { uni[w] = true; });
+  var union = Object.keys(uni).length;
+  return union > 0 && (inter / union) >= 0.6;
+}
+
+/**
+ * タイトル（＋著者）で CrossRef を検索し、十分一致する候補の DOI を values.doi に入れる。
+ * 見つけて設定したら true。誤った DOI を入れないよう、タイトル類似度で検証する。
+ */
+function resolveDoiByTitle_(values) {
+  var title = String(values.title_en || values.title_ja || "").trim();
+  if (title.length < 8) return false;  // 短すぎるタイトルは検索精度が低いので見送る
+  var authors = String(values.authors || "").trim();
+  var query = encodeURIComponent(authors ? (title + " " + authors) : title);
+  var url = "https://api.crossref.org/works?rows=5&select=DOI,title&query.bibliographic=" + query;
+  var items;
+  try {
+    var resp = UrlFetchApp.fetch(url, {muteHttpExceptions: true, followRedirects: true});
+    if (resp.getResponseCode() !== 200) return false;
+    items = ((JSON.parse(resp.getContentText()).message) || {}).items || [];
+  } catch (err) {
+    return false;
+  }
+  for (var i = 0; i < items.length; i++) {
+    var ct = (items[i].title && items[i].title.length) ? items[i].title[0] : "";
+    if (titleSimilar_(title, ct)) {
+      var doi = String(items[i].DOI || "").trim();
+      if (doi) { values.doi = doi; return true; }
+    }
+  }
+  return false;
 }
 
 /** CrossRef から論文/著書情報を取得し values の空欄を補完。補完したら true。 */

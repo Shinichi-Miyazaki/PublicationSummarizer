@@ -19,6 +19,9 @@
 var APP_STATUS_OK = "確認済";
 var APP_STATUS_NEW = "未確認";
 
+// 編集をロックするメタ列（ヘッダ名）。publication_form.gs の META_FIELDS と一致。
+var META_FIELDS_LOCK = ["record_id", "status", "submitter", "source", "created_at", "note"];
+
 // タブ名 → 種別（DOI 補完の対象判定に使用）。publication_form.gs と一致。
 var TAB_TYPE = {
   "Original Papers": "paper", "Books": "book", "presentations": "presentation",
@@ -31,6 +34,7 @@ function onOpen() {
     .addItem("選択行を未確認に戻す", "unapproveSelected")
     .addSeparator()
     .addItem("選択行を DOI で補完", "enrichSelectedDoi")
+    .addItem("選択行をタイトルで補完(DOI検索)", "enrichSelectedByTitle")
     .addItem("このタブの重複を再チェック", "recheckDuplicates")
     .addSeparator()
     .addItem("色分けを設定（全タブ）", "highlightAllTabs")
@@ -38,6 +42,8 @@ function onOpen() {
     .addItem("一括下書き: シートを準備", "stagingSetup")
     .addItem("一括下書き: 表に展開", "stagingExpand")
     .addItem("一括下書き: 取り込む", "stagingImport")
+    .addSeparator()
+    .addItem("メンバー編集を有効化（保護＋編集で未確認へ）", "setupMemberEditing")
     .addToUi();
 }
 
@@ -85,6 +91,84 @@ function enrichSelectedDoi() {
     }
   });
   toast_(n + " 行を DOI で補完しました");
+}
+
+/**
+ * 選択行をタイトルで補完（論文のみ）。DOI 未入力の行をタイトル（＋著者）で CrossRef 検索し、
+ * 十分一致する候補の DOI を入れてから、CrossRef で空欄を補完する。
+ */
+function enrichSelectedByTitle() {
+  var sh = SpreadsheetApp.getActiveSheet();
+  var type = TAB_TYPE[sh.getName()];
+  if (type !== "paper") { toast_("タイトル検索は論文タブのみ対応です"); return; }
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var col = {};
+  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
+  if (!("doi" in col)) { toast_("doi 列がありません"); return; }
+  var found = 0, filled = 0;
+  eachSelectedDataRow_(sh, function (r) {
+    var rowRange = sh.getRange(r, 1, 1, header.length);
+    var row = rowRange.getValues()[0];
+    if (String(row[col.doi] || "").trim()) return;  // 既に DOI があれば DOI 補完側で対応
+    var title = String(row[col.title_en] || row[col.title_ja] || "").trim();
+    var authors = String(col.authors != null ? row[col.authors] : "").trim();
+    var doi = resolveDoiByTitle_(title, authors);
+    if (!doi) return;
+    row[col.doi] = doi;
+    found++;
+    var msg = fetchCrossref_(doi);
+    if (msg) fillRowFromCrossref_(row, col, type, msg);
+    var note = String(col.note != null ? row[col.note] : "");
+    if (col.note != null && note.indexOf("crossref-title") < 0) {
+      row[col.note] = note ? note + "; crossref-title" : "crossref-title";
+    }
+    rowRange.setValues([row]);
+    filled++;
+  });
+  toast_(found + " 行で DOI を特定（" + filled + " 行を補完）しました");
+}
+
+/** タイトルを単語トークンへ分解（小文字化・記号→空白・CJK は1トークン）。 */
+function titleTokens_(s) {
+  return String(s || "").toLowerCase()
+    .replace(/[^0-9a-z぀-ヿ㐀-鿿]+/g, " ").trim()
+    .split(/\s+/).filter(function (w) { return w.length; });
+}
+
+/** 2 つのタイトルが十分に一致するか（トークン Jaccard >= 0.6）。誤マッチ防止用。 */
+function titleSimilar_(a, b) {
+  var ta = titleTokens_(a), tb = titleTokens_(b);
+  if (!ta.length || !tb.length) return false;
+  var setB = {}; tb.forEach(function (w) { setB[w] = true; });
+  var inter = 0, seen = {};
+  ta.forEach(function (w) { if (setB[w] && !seen[w]) { inter++; seen[w] = true; } });
+  var uni = {}; ta.concat(tb).forEach(function (w) { uni[w] = true; });
+  var union = Object.keys(uni).length;
+  return union > 0 && (inter / union) >= 0.6;
+}
+
+/** タイトル（＋著者）で CrossRef を検索し、十分一致する候補の DOI を返す（なければ ""）。 */
+function resolveDoiByTitle_(title, authors) {
+  title = String(title || "").trim();
+  if (title.length < 8) return "";
+  var query = encodeURIComponent(authors ? (title + " " + authors) : title);
+  var url = "https://api.crossref.org/works?rows=5&select=DOI,title&query.bibliographic=" + query;
+  var items;
+  try {
+    var resp = UrlFetchApp.fetch(url, {muteHttpExceptions: true, followRedirects: true});
+    if (resp.getResponseCode() !== 200) return "";
+    items = ((JSON.parse(resp.getContentText()).message) || {}).items || [];
+  } catch (err) {
+    return "";
+  }
+  for (var i = 0; i < items.length; i++) {
+    var ct = (items[i].title && items[i].title.length) ? items[i].title[0] : "";
+    if (titleSimilar_(title, ct)) {
+      var doi = String(items[i].DOI || "").trim();
+      if (doi) return doi;
+    }
+  }
+  return "";
 }
 
 /** アクティブタブ内の重複を再チェックし、後発行に note=dup_of を付ける。 */
@@ -185,6 +269,111 @@ function colLetter_(n) {
     n = Math.floor((n - 1) / 26);
   }
   return s;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  メンバー編集モード（自己修正可＋編集で必ず再審査）
+// ════════════════════════════════════════════════════════════════
+// 設計: メンバーに DB の編集権を渡しても安全になるよう、
+//   1) ヘッダ行とメタ列（record_id/status/... ）を保護してオーナーのみ編集可に。
+//   2) installable な onEdit トリガで、メンバーがデータ列を編集したら
+//      その行の status を「未確認」に戻し note に "edited" を付ける。
+//      → 編集も必ずキュレーターの「未確認→確認済」ゲートを通る。
+// 注意: シート単位の共有のため、他メンバーの行の編集・行削除までは技術的に防げない
+//       （少人数・信頼前提の運用を想定）。メンバーには「閲覧＋自分の行のみ修正」を周知する。
+
+/** メニュー: 保護を設定し、編集→未確認トリガを設置する。 */
+function setupMemberEditing() {
+  installEditRevertTrigger_();
+  protectMetaAllTabs();
+  toast_("メンバー編集を有効化しました（ヘッダ・メタ列を保護／編集で未確認へ戻す）");
+}
+
+/** 全 record タブのヘッダ行とメタ列を保護（編集はオーナーのみ）。 */
+function protectMetaAllTabs() {
+  var ss = SpreadsheetApp.getActive();
+  var me = Session.getEffectiveUser();
+  Object.keys(TAB_TYPE).forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (sh) protectSheetMeta_(sh, me);
+  });
+}
+
+var PROTECT_TAG = "業績DB:lock";  // 当スクリプトが付けた保護の目印（再設定時に作り直す）。
+
+/** 1 タブのヘッダ行＋メタ各列を保護する（既存の当スクリプト保護は作り直す）。 */
+function protectSheetMeta_(sh, me) {
+  sh.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (p) {
+    if (p.getDescription() === PROTECT_TAG) p.remove();
+  });
+  var maxRows = sh.getMaxRows();
+  var lastCol = sh.getLastColumn();
+  if (lastCol < 1) return;
+  // ヘッダ行（列名）を保護。
+  protectRange_(sh.getRange(1, 1, 1, lastCol), me);
+  // メタ列を（将来追記される行も含め）列全体で保護。
+  var header = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  META_FIELDS_LOCK.forEach(function (name) {
+    for (var i = 0; i < header.length; i++) {
+      if (String(header[i]).trim() === name && maxRows >= 2) {
+        protectRange_(sh.getRange(2, i + 1, maxRows - 1, 1), me);
+      }
+    }
+  });
+}
+
+/** 範囲を保護し、編集者を me のみにする。 */
+function protectRange_(range, me) {
+  var p = range.protect().setDescription(PROTECT_TAG);
+  p.removeEditors(p.getEditors());
+  if (p.canDomainEdit()) p.setDomainEdition(false);
+  p.addEditor(me);
+}
+
+/** onEdit トリガ（onEditRevert）を重複なく設置する。 */
+function installEditRevertTrigger_() {
+  var ss = SpreadsheetApp.getActive();
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "onEditRevert") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("onEditRevert").forSpreadsheet(ss).onEdit().create();
+}
+
+/**
+ * installable onEdit トリガ本体（オーナー権限で実行）。
+ * record タブのデータ列が編集されたら、その行の status を「未確認」へ戻し、
+ * note に "edited" を付ける（メタ列だけの編集・空行は対象外）。
+ */
+function onEditRevert(e) {
+  if (!e || !e.range) return;
+  var sh = e.range.getSheet();
+  if (!TAB_TYPE[sh.getName()]) return;          // record タブのみ
+  var lastCol = sh.getLastColumn();
+  var header = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var col = {};                                  // ヘッダ名 → 1-based 列番号
+  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i + 1;
+  if (!col.status) return;
+
+  // メタ列だけの編集（status/note の自動更新を含む）は無視 → 無限ループ防止。
+  var metaCols = {};
+  META_FIELDS_LOCK.forEach(function (n) { if (col[n]) metaCols[col[n]] = true; });
+  var c0 = e.range.getColumn(), nc = e.range.getNumColumns();
+  var dataEdited = false;
+  for (var c = c0; c < c0 + nc; c++) if (!metaCols[c]) dataEdited = true;
+  if (!dataEdited) return;
+
+  var r0 = e.range.getRow(), nr = e.range.getNumRows();
+  for (var r = Math.max(r0, 2); r < r0 + nr; r++) {
+    var rid = col.record_id ? String(sh.getRange(r, col.record_id).getValue()).trim() : "x";
+    if (!rid) continue;                          // 空行（record_id なし）は対象外
+    sh.getRange(r, col.status).setValue(APP_STATUS_NEW);
+    if (col.note) {
+      var note = String(sh.getRange(r, col.note).getValue() || "");
+      if (note.indexOf("edited") < 0) {
+        sh.getRange(r, col.note).setValue(note ? note + "; edited" : "edited");
+      }
+    }
+  }
 }
 
 // ── 共通ヘルパ ───────────────────────────────────────────────
@@ -307,7 +496,7 @@ var CANON_FIELDS = {
 var FIELD_CHOICES = {
   category: ["原著論文", "英文総説"], peer_reviewed: ["査読あり", "査読なし"],
   international: ["国内", "国際"], scope: ["国内", "国際"],
-  invited: ["招待あり", "招待なし"], presentation_type: ["口頭", "ポスター"],
+  invited: ["招待あり", "招待なし"], presentation_type: ["口頭", "ポスター", "口頭＆ポスター"],
   media_type: ["新聞", "TV", "Web", "雑誌", "その他"]
 };
 

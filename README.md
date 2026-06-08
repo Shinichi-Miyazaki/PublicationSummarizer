@@ -103,8 +103,8 @@ publication_summarizer/
 scripts/ingest_to_canonical.py  一括取り込み（旧DB移行 + 構造化リストの追記）
 scripts/make_templates.py       一括入力テンプレート（種別ごとの Excel）を生成
 scripts/ingest_paste.py         researchmap 等のプレーンテキストを解析して取り込み
-scripts/forms/publication_form.gs  Apps Script: 1フォーム生成＋送信を Canonical へ自動取込（英日両入力・DOI補完・重複フラグ）
-scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・DOI補完・重複再チェック）
+scripts/forms/publication_form.gs  Apps Script: 1フォーム生成＋送信を Canonical へ自動取込（英日両入力・DOI補完・タイトル→DOI検索・重複フラグ）
+scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・DOI/タイトル補完・重複再チェック・一括下書き・メンバー編集の保護）
 tests/verify.py                 動作検証スクリプト（ユニット＋整合＋統合）
 tests/test_form_fields.py       .gs の設問定義と schema の一致を検証（ドリフト防止）
 tests/fixtures/                 検証用の合成 Canonical サンプル
