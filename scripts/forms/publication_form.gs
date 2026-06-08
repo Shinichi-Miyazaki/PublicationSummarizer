@@ -607,6 +607,35 @@ function parseRecordsLlm_(text, type) {
   return normalizeLlmRecords_(recs, type);
 }
 
+/**
+ * 手動実行用の診断: トークンの有無と GitHub Models への接続結果をログに出す。
+ * エディタ上部の関数選択で testLlmToken を選び「実行」→「表示 → ログ」で結果を確認する。
+ *   HTTP 200 = 正常 / 401 = トークン無効・Models権限なし / 404 = モデルID違い / それ以外 = 本文参照
+ */
+function testLlmToken() {
+  var token = scriptProp_(LLM_TOKEN_PROP);
+  Logger.log(LLM_TOKEN_PROP + " の登録: " + (token ? ("あり（" + token.length + " 文字）") : "なし"));
+  if (!token) {
+    Logger.log("→ このプロジェクトの『プロジェクトの設定 → スクリプト プロパティ』に "
+      + LLM_TOKEN_PROP + " を登録してください。");
+    return;
+  }
+  try {
+    var resp = UrlFetchApp.fetch(LLM_BASE_URL + "/chat/completions", {
+      method: "post", contentType: "application/json",
+      headers: {Authorization: "Bearer " + token}, muteHttpExceptions: true,
+      payload: JSON.stringify({
+        model: LLM_MODEL, temperature: 0,
+        messages: [{role: "user", content: "Reply with the single word: ok"}]
+      })
+    });
+    Logger.log("HTTP " + resp.getResponseCode() + " / model=" + LLM_MODEL);
+    Logger.log(String(resp.getContentText()).slice(0, 500));
+  } catch (e) {
+    Logger.log("例外: " + e);
+  }
+}
+
 /** values（新規）の代表タイトル（_ja 優先、無ければ _en、book は book_title）。 */
 function recTitleOf_(v) {
   var keys = ["title_ja", "title_en", "book_title_ja", "book_title_en"];
