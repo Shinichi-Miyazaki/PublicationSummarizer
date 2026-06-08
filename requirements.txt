@@ -4,3 +4,4 @@ openpyxl
 pyyaml
 requests
 rapidfuzz
+openai  # 任意: scripts/ingest_paste.py --llm（GitHub Models）でのみ使用。未導入でも基本機能は動作。

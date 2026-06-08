@@ -260,6 +260,46 @@ def paste_tests() -> None:
     check("Marine等の月名途中一致を誤検出しない", ip._find_date("Marine Biology Society 2021") is None)
 
 
+def llm_parse_tests() -> None:
+    """LLM 構造化抽出（scripts/llm_parse.py）の純関数・フォールバック検証（ネットワーク非依存）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "llm_parse",
+        Path(__file__).resolve().parent.parent / "scripts" / "llm_parse.py")
+    lp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lp)
+
+    print("[llm] _normalize_llm_records（許可キー除去・型整形・空件除外）")
+    raw = [
+        # 許可外キー(foo)は除去、数値→文字列＋strip、date は保持。
+        {"title": "  REM sleep in mice  ", "authors": "Yamada T", "volume": 16,
+         "foo": "x", "date": "2025/7", "doi": ""},
+        # タイトルも著者も無い → 除外。
+        {"journal": "Sci Rep"},
+        # 著者のみ → 採用。
+        {"authors": "Hayashi N"},
+        # dict 以外 → 無視。
+        "not-a-dict",
+    ]
+    recs = lp._normalize_llm_records(raw, "paper")
+    check("空件・非dictを除外して2件", len(recs) == 2, f"n={len(recs)}")
+    check("許可外キー foo を除去", "foo" not in recs[0])
+    check("数値 volume を文字列化", recs[0].get("volume") == "16")
+    check("タイトルを strip", recs[0].get("title") == "REM sleep in mice")
+    check("空文字 doi は脱落", "doi" not in recs[0])
+    check("著者のみの件を採用", recs[1].get("authors") == "Hayashi N")
+
+    print("[llm] llm_enabled / トークン未設定時のフォールバック")
+    check("トークン有→enabled", lp.llm_enabled("ghp_dummy"))
+    check("トークン無→disabled", not lp.llm_enabled(""))
+    raised = False
+    try:
+        lp.parse_records_llm("any text", "paper", token="")
+    except lp.LLMParseError:
+        raised = True
+    check("トークン無で LLMParseError（→従来解析へフォールバック）", raised)
+
+
 def integration_tests(source) -> None:
     print("[integration] loading workbook")
     df = load_publications(source)
@@ -325,6 +365,7 @@ def main() -> None:
     template_header_tests(check)
     v2_tests()
     paste_tests()
+    llm_parse_tests()
     if len(sys.argv) > 1:
         arg = sys.argv[1]
         # ローカルファイルならオフライン検証、それ以外は共有 URL/ID としてライブ取得。

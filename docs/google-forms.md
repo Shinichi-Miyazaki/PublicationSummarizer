@@ -46,6 +46,23 @@
 
 > CLI（`scripts/ingest_paste.py`）でも同じ取り込みができますが、**メンバー配布にはこのフォームの貼り付けが最も簡単**です。
 
+#### CLI で精度を上げる：LLM 構造化（`--llm`、GitHub Models）
+
+貼り付けテキストの解析は通常ヒューリスティック（末尾の日付で区切る等）ですが、researchmap 以外の崩れた表記では取りこぼしが出ます。**`--llm` を付けると GitHub Models（OpenAI 互換・無料枠）でテキストを構造化抽出**し、手直しを減らせます。
+
+```powershell
+# 1) GitHub の Personal Access Token (fine-grained) を models:read 権限で発行し、環境変数に設定
+$env:GITHUB_TOKEN = "github_pat_xxx"
+# 2) --llm を付けて取り込み（失敗時は自動で従来解析にフォールバック）
+.\.venv\Scripts\python.exe scripts\ingest_paste.py --type paper --src papers.txt --llm --append canonical.xlsx
+#    別モデルを使う場合: --model openai/gpt-4o
+```
+
+- **DOI は LLM に作らせません**（捏造防止）。DOI は本文に書かれている時だけ拾い、確定・補完は CrossRef（フォーム送信側の自動補完／キュレーターメニュー）に委ねます。
+- **トークン未設定・`openai` 未導入・API/JSON エラー時は、警告のうえ従来のヒューリスティック解析へ自動フォールバック**します（`--llm` を付けても失敗で止まりません）。`openai` は `requirements.txt` の任意依存です。
+- **無料枠にレート制限**があります（low-tier の目安: 15 req/分・150 req/日・入力 ~8000 トークン）。本ツールは 1 回の貼り付けを 1 リクエストにまとめ、長文は自動でチャンク分割します。
+- **プライバシー注意**：`--llm` を使うと貼り付け本文が GitHub Models（外部サービス）へ送信されます。機微な情報を含む場合は使用可否を確認してください。将来ローカル LLM へ切り替える場合も、`--model` と接続先（OpenAI 互換）の差し替えだけで対応できる設計です。
+
 > **設計方針（DOI を必須にしない）**：論文以外（発表・受賞・著書・アウトリーチ・広報）に DOI は無く、和文誌・和書は DOI 解決が弱いため、全項目を手入力で受けます。DOI は論文・著書の **任意項目**（形式検証つき）に留めます。
 
 ---

@@ -102,7 +102,8 @@ publication_summarizer/
   templates.yaml                書式プリセット（科研費ベース、編集可）
 scripts/ingest_to_canonical.py  一括取り込み（旧DB移行 + 構造化リストの追記）
 scripts/make_templates.py       一括入力テンプレート（種別ごとの Excel）を生成
-scripts/ingest_paste.py         researchmap 等のプレーンテキストを解析して取り込み
+scripts/ingest_paste.py         researchmap 等のプレーンテキストを解析して取り込み（--llm で LLM 構造化）
+scripts/llm_parse.py            任意: GitHub Models(OpenAI互換)で貼り付けを構造化抽出（--llm 用・未導入でも基本機能は動作）
 scripts/forms/publication_form.gs  Apps Script: 1フォーム生成＋送信を Canonical へ自動取込（英日両入力・DOI補完・タイトル→DOI検索・重複フラグ）
 scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・DOI/タイトル補完・重複再チェック・一括下書き・メンバー編集の保護）
 tests/verify.py                 動作検証スクリプト（ユニット＋整合＋統合）
