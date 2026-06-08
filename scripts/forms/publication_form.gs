@@ -24,6 +24,7 @@
 
 // ▼▼▼ ここだけ書き換える ▼▼▼
 var CANONICAL_SHEET_ID = "1_7b_-6EsRNr6tW1naDj8QJ5M0espE5Wv";
+
 // ▲▲▲ ここだけ書き換える ▲▲▲
 
 // Canonical 各タブの先頭メタ列（schema.py / ingest と同一）。
@@ -36,6 +37,7 @@ var SOURCE_LABEL = "form";
 // キー名「GITHUB_MODELS_TOKEN」で PAT（models:read 権限）を登録する（手順は docs/google-forms.md）。
 // 未登録なら従来のヒューリスティック解析にフォールバックする。
 var LLM_BASE_URL = "https://models.github.ai/inference";
+
 var LLM_MODEL = "openai/gpt-4o-mini";
 var LLM_TOKEN_PROP = "GITHUB_MODELS_TOKEN";
 
