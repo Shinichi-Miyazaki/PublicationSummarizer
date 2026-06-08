@@ -31,6 +31,14 @@ var META_FIELDS = ["record_id", "status", "submitter", "source", "created_at", "
 var APP_STATUS_NEW = "未確認"; // 取込直後の status。確認後にキュレーターが「確認済」へ。
 var SOURCE_LABEL = "form";
 
+// 一括貼り付けの LLM 構造化（任意）。GitHub Models（OpenAI 互換・無料枠）を使う。
+// トークンはコードに直書きせず、プロジェクトの設定 → スクリプト プロパティに
+// キー名「GITHUB_MODELS_TOKEN」で PAT（models:read 権限）を登録する（手順は docs/google-forms.md）。
+// 未登録なら従来のヒューリスティック解析にフォールバックする。
+var LLM_BASE_URL = "https://models.github.ai/inference";
+var LLM_MODEL = "openai/gpt-4o-mini";
+var LLM_TOKEN_PROP = "GITHUB_MODELS_TOKEN";
+
 /**
  * 種別ごとの設問定義。
  * tab/prefix/fields は schema.py・ingest と厳密一致（tests/test_form_fields.py で検証）。
@@ -352,11 +360,20 @@ function routeBulk_(byId, map, reporter) {
     return;
   }
   var text = String(byId[map.bulkTextId] || "");
-  var recs = parseRecords_(text, type);
+  // LLM 構造化を試み、失敗（トークン無・API/JSON エラー）時は従来解析へフォールバック。
+  var recs, source = "paste-form";
+  try {
+    recs = parseRecordsLlm_(text, type);
+    source = "paste-llm";
+    Logger.log("[routeBulk] LLM 解析: " + recs.length + " 件");
+  } catch (e) {
+    Logger.log("[routeBulk] LLM 不使用→従来解析（" + e + "）");
+    recs = parseRecords_(text, type);
+  }
   var ss = SpreadsheetApp.openById(CANONICAL_SHEET_ID);
   var n = 0;
   recs.forEach(function (rec) {
-    appendOne_(ss, type, rec, reporter, "paste-form");
+    appendOne_(ss, type, rec, reporter, source);
     n++;
   });
   Logger.log("[routeBulk] " + type + " を " + n + " 件追記しました。");
@@ -507,6 +524,87 @@ function parseRecords_(text, rtype) {
     buf = [];
   });
   return records;
+}
+
+// ── 一括貼り付けの LLM 構造化（GitHub Models / OpenAI 互換・任意） ──────────
+/** スクリプト プロパティを読む（未設定は ""）。 */
+function scriptProp_(key) {
+  return String(PropertiesService.getScriptProperties().getProperty(key) || "").trim();
+}
+
+/** その種別の base フィールド並び（FIELD_MAP の _ja/_en を base へ集約・重複除去）。 */
+function baseFieldsOf_(type) {
+  var seen = {}, out = [];
+  FIELD_MAP[type].questions.forEach(function (q) {
+    var f = q.field, base = f.replace(/_(ja|en)$/, "");
+    if (BILINGUAL_BASES.indexOf(base) >= 0) f = base;
+    if (!seen[f]) { seen[f] = true; out.push(f); }
+  });
+  return out;
+}
+
+/** LLM 応答（配列）を許可キーのみ・文字列化・空件除外で base-dict 配列へ正規化。 */
+function normalizeLlmRecords_(raw, type) {
+  var allowed = {};
+  baseFieldsOf_(type).forEach(function (f) { allowed[f] = true; });
+  var titleKeys = ["title", "review_title", "book_title"];
+  var out = [];
+  (raw || []).forEach(function (r) {
+    if (!r || typeof r !== "object") return;
+    var rec = {};
+    Object.keys(r).forEach(function (k) {
+      if (allowed[k] && r[k] != null) {
+        var s = String(r[k]).trim();
+        if (s) rec[k] = s;
+      }
+    });
+    var hasTitle = titleKeys.some(function (k) { return rec[k]; });
+    if (hasTitle || rec.authors) out.push(rec);
+  });
+  return out;
+}
+
+/**
+ * 貼り付けテキストを GitHub Models で構造化し、base-dict 配列を返す。
+ * トークン未設定・API/JSON エラー時は throw（呼び出し側で従来解析へフォールバック）。
+ */
+function parseRecordsLlm_(text, type) {
+  var token = scriptProp_(LLM_TOKEN_PROP);
+  if (!token) throw new Error(LLM_TOKEN_PROP + " 未設定");
+  var fields = baseFieldsOf_(type);
+  var prompt =
+    "あなたは研究業績テキストの構造化抽出器です。貼り付けテキストから業績を1件ずつ抽出し、" +
+    '{"records": [ {...}, ... ]} という JSON だけを返してください。\n' +
+    "各レコードのキーは次のみを使う: " + fields.join(", ") + "\n" +
+    "規則:\n- 本文に存在する情報だけを入れる。推測・創作はしない。\n" +
+    '- doi は本文に明記がある時だけ。無ければ ""（絶対に生成・推測しない）。\n' +
+    '- date は "YYYY/M" もしくは "YYYY/M/D"。\n' +
+    "- title・journal・conference 等は原文の言語のまま（翻訳しない）。\n" +
+    '- volume / issue は数字、pages は "開始-終了"。不明な項目は ""。\n\nテキスト:\n' + text;
+
+  var resp = UrlFetchApp.fetch(LLM_BASE_URL + "/chat/completions", {
+    method: "post",
+    contentType: "application/json",
+    headers: {Authorization: "Bearer " + token},
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      model: LLM_MODEL,
+      temperature: 0,
+      response_format: {type: "json_object"},
+      messages: [
+        {role: "system", content: "厳密な JSON のみを出力する構造化抽出器。"},
+        {role: "user", content: prompt}
+      ]
+    })
+  });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error("HTTP " + resp.getResponseCode());
+  }
+  var content = JSON.parse(resp.getContentText()).choices[0].message.content;
+  var data = JSON.parse(content);
+  var recs = (data && data.records) ? data.records : (Array.isArray(data) ? data : null);
+  if (!Array.isArray(recs)) throw new Error("records 配列なし");
+  return normalizeLlmRecords_(recs, type);
 }
 
 /** values（新規）の代表タイトル（_ja 優先、無ければ _en、book は book_title）。 */

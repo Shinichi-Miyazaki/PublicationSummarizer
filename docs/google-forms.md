@@ -44,7 +44,20 @@
   `_ja`/`_en` に自動振り分けて、各件を `status=未確認` で追記（重複は `dup_of` フラグ）。
 - 解析の都合上、**1 項目 1 行・余計な注記なし**で貼ってください（researchmap のコピーそのまま）。
 
-> CLI（`scripts/ingest_paste.py`）でも同じ取り込みができますが、**メンバー配布にはこのフォームの貼り付けが最も簡単**です。
+#### 一括貼り付けを LLM で自動構造化する（任意・精度向上）
+
+トークンを 1 つ登録しておくと、**「まとめて貼り付け」送信時に自動で GitHub Models（OpenAI 互換・無料枠）が解析**し、崩れた表記でも取りこぼしを減らせます。設定しなければ従来のヒューリスティック解析のまま動きます（後方互換）。
+
+1. GitHub で **Personal Access Token（fine-grained）** を発行：Settings → Developer settings → Fine-grained tokens → **Account permissions の「Models」を Read-only** にして生成。
+2. フォーム用の Apps Script プロジェクトを開き、**⚙ プロジェクトの設定 → スクリプト プロパティ** で、キー `GITHUB_MODELS_TOKEN`・値に発行した PAT を追加して保存。
+3. 以降、メンバーの「まとめて貼り付け」送信は自動で LLM 構造化される（`source` 列が `paste-llm`）。
+
+- **DOI は LLM に生成させません**（本文に明記がある時だけ採用）。DOI/英語情報の確定は従来どおり CrossRef が補完します。
+- **失敗時（トークン無・API/JSON エラー）は従来解析へ自動フォールバック**するので、送信が失敗することはありません。
+- レート制限はトークン所有者（あなた）の無料枠を消費します（目安: 150 req/日）。1 送信＝1 リクエストです。
+- **プライバシー**：貼り付け本文が GitHub Models（外部）へ送信されます。`source=paste-llm` の行は LLM 解析由来、`paste-form` は従来解析由来として見分けられます。
+
+> CLI（`scripts/ingest_paste.py --llm`）でも同じ LLM 構造化ができます（`GITHUB_TOKEN` を環境変数に設定）。**メンバー配布にはこのフォームの貼り付けが最も簡単**です。
 
 #### CLI で精度を上げる：LLM 構造化（`--llm`、GitHub Models）
 
