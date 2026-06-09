@@ -164,6 +164,12 @@ def main() -> None:
         caption += tr("count_author_suffix", lang).format(names=", ".join(sel_author_disp))
     st.caption(caption)
 
+    # 選択メンバーを出力中で強調するための述語（未選択なら強調なし）。
+    highlight = (
+        (lambda tok: any(matcher.matches_member(tok, m) for m in sel_members))
+        if sel_members else None
+    )
+
     # ── 種別ごとに整形・表示（0件はスキップ）──────────────────
     shown = 0
     for rtype in selected_types:
@@ -193,14 +199,47 @@ def main() -> None:
                 bold_disp = st.multiselect(tr("style_bold", lang), list(disp_to_key), key=f"bold_{rtype}")
             with c2:
                 italic_disp = st.multiselect(tr("style_italic", lang), list(disp_to_key), key=f"italic_{rtype}")
+
+            st.markdown(f"**{tr('author_section', lang)}**")
+            a1, a2 = st.columns(2)
+            with a1:
+                author_max = st.number_input(
+                    tr("author_max_label", lang), min_value=0, step=1,
+                    value=int(spec.get("author_max", 0) or 0),
+                    key=f"amax_{rtype}", help=tr("author_max_help", lang),
+                )
+                author_etal = st.text_input(
+                    tr("author_etal_label", lang), value=str(spec.get("author_etal", "") or ""),
+                    key=f"aetal_{rtype}", help=tr("author_etal_help", lang),
+                )
+            with a2:
+                author_etal_count = st.checkbox(
+                    tr("author_etal_count_label", lang),
+                    value=bool(spec.get("author_etal_count", False)), key=f"acount_{rtype}",
+                )
+                author_keep_hl = st.checkbox(
+                    tr("author_keep_hl_label", lang),
+                    value=bool(spec.get("author_keep_highlighted", True)), key=f"akeep_{rtype}",
+                )
+                author_bold = st.checkbox(
+                    tr("author_emphasis_label", lang),
+                    value=spec.get("author_emphasis", "bold") != "none",
+                    key=f"aemph_{rtype}", help=tr("author_emphasis_help", lang),
+                )
         bold_fields = {disp_to_key[d] for d in bold_disp}
         italic_fields = {disp_to_key[d] for d in italic_disp}
-        spec = {**spec, "pattern": pattern}
+        spec = {
+            **spec, "pattern": pattern,
+            "author_max": int(author_max), "author_etal": author_etal,
+            "author_etal_count": author_etal_count, "author_keep_highlighted": author_keep_hl,
+            "author_emphasis": "bold" if author_bold else "none",
+        }
 
         result = render_records(
             sub, spec,
             numeric_fields=NUMERIC_BY_TYPE.get(rtype, ()),
             bold_fields=bold_fields, italic_fields=italic_fields, lang=lang,
+            highlight=highlight,
         )
         st.caption(tr("copy_hint", lang))
         st.markdown(result["markdown"])

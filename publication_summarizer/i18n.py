@@ -80,6 +80,27 @@ STRINGS: dict[str, tuple[str, str]] = {
     ),
     "style_bold": ("太字にする項目", "Bold items"),
     "style_italic": ("斜体にする項目", "Italic items"),
+    "author_section": ("👥 著者の表示", "👥 Author display"),
+    "author_max_label": ("表示する著者数（0＝全員）", "Authors to show (0 = all)"),
+    "author_max_help": (
+        "上限を超える著者は省略語でまとめます。0 なら全員を表示します。",
+        "Authors beyond the limit are summarized with an et-al marker. 0 shows everyone.",
+    ),
+    "author_etal_label": ("省略語（空＝自動）", "Et-al marker (blank = auto)"),
+    "author_etal_help": (
+        "空欄なら言語に応じて「ほか」（日本語）/「et al.」（英語）になります。",
+        "Blank auto-selects 「ほか」(Japanese) / 「et al.」(English).",
+    ),
+    "author_etal_count_label": ("「ほかN名」と人数を出す（日本語）", "Show remaining count as 「ほかN名」 (Japanese)"),
+    "author_keep_hl_label": (
+        "選択した著者は省略せず必ず表示",
+        "Always keep the selected author(s) visible",
+    ),
+    "author_emphasis_label": ("選択した著者を太字にする", "Bold the selected author(s)"),
+    "author_emphasis_help": (
+        "サイドバーで著者を選ぶと、出力中のその名前が太字になります。",
+        "When you pick authors in the sidebar, their names are bolded in the output.",
+    ),
     "copy_hint": (
         "👇 ドラッグで選択してコピーすると、太字・斜体も保持されます。",
         "👇 Select and copy the text below to keep bold/italic formatting.",
