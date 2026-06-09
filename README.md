@@ -105,7 +105,7 @@ scripts/make_templates.py       一括入力テンプレート（種別ごとの
 scripts/ingest_paste.py         researchmap 等のプレーンテキストを解析して取り込み（--llm で LLM 構造化）
 scripts/llm_parse.py            任意: GitHub Models(OpenAI互換)で貼り付けを構造化抽出（--llm 用・未導入でも基本機能は動作）
 scripts/forms/publication_form.gs  Apps Script: 1フォーム生成＋送信を Canonical へ自動取込（英日両入力・DOI/ISBN補完・タイトル→DOI検索・一括貼り付けの任意LLM構造化・重複フラグ）
-scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・DOI/タイトル/ISBN補完・まとめて点検=重複/欠損/色分け→点検レポート・一括下書き・メンバー編集の保護）
+scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・選択行を補完=DOI/タイトル/ISBN・まとめて点検=重複/欠損/色分け→点検レポート・メンバー編集の保護）
 tests/verify.py                 動作検証スクリプト（ユニット＋整合＋統合）
 tests/test_form_fields.py       .gs の設問定義と schema の一致を検証（ドリフト防止）
 tests/fixtures/                 検証用の合成 Canonical サンプル

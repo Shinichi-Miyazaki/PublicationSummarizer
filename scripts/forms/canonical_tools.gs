@@ -10,8 +10,8 @@
  * メニュー:
  *   - 選択行を承認(確認済) / 未確認に戻す  … status を切り替える
  *   - ★ まとめて点検                      … 全タブの重複・欠損を再判定し色分け＋「点検レポート」シートに一覧
- *   - 選択行を DOI / タイトル / ISBN で補完 … CrossRef・OpenLibrary で空欄を補完
- *   - 一括下書き / メンバー編集を有効化      … 貼り付け取込・メンバー自己修正の保護
+ *   - 選択行を補完                        … 論文=DOI/タイトル検索→CrossRef、書籍=ISBN→OpenLibrary
+ *   - メンバー編集を有効化                  … 列・メタ保護＋編集で未確認に戻す（メンバー自己修正）
  *
  * 注意: 補完・承認は record タブ（Original Papers / presentations 等）で行を選択してから実行する。
  */
@@ -34,14 +34,7 @@ function onOpen() {
     .addItem("選択行を未確認に戻す", "unapproveSelected")
     .addSeparator()
     .addItem("★ まとめて点検（重複・欠損・色分け → レポート）", "runAllChecks")
-    .addSeparator()
-    .addItem("選択行を DOI で補完", "enrichSelectedDoi")
-    .addItem("選択行をタイトルで補完(DOI検索)", "enrichSelectedByTitle")
-    .addItem("選択行を ISBN で補完(書籍)", "enrichSelectedIsbn")
-    .addSeparator()
-    .addItem("一括下書き: シートを準備", "stagingSetup")
-    .addItem("一括下書き: 表に展開", "stagingExpand")
-    .addItem("一括下書き: 取り込む", "stagingImport")
+    .addItem("選択行を補完（DOI・タイトル・ISBN 自動）", "enrichSelected")
     .addSeparator()
     .addItem("メンバー編集を有効化（保護＋編集で未確認へ）", "setupMemberEditing")
     .addToUi();
@@ -63,69 +56,57 @@ function setStatusSelected_(status) {
   toast_(n + " 行を「" + status + "」にしました");
 }
 
-/** 選択行を CrossRef で補完（空欄のみ）。 */
-function enrichSelectedDoi() {
+/**
+ * 選択行を自動補完（論文・書籍のみ）。タブと各行の内容に応じて使い分ける:
+ *   論文 … DOI があれば CrossRef、無ければタイトル（＋著者）で DOI を特定してから CrossRef。
+ *   書籍 … DOI があれば CrossRef、ISBN があれば OpenLibrary で書名・出版社・出版日。
+ */
+function enrichSelected() {
   var sh = SpreadsheetApp.getActiveSheet();
   var type = TAB_TYPE[sh.getName()];
-  if (!type) { toast_("record タブで実行してください"); return; }
-  if (type !== "paper" && type !== "book") { toast_("DOI 補完は論文・著書のみ対応です"); return; }
+  if (type !== "paper" && type !== "book") { toast_("自動補完は論文・書籍タブのみ対応です"); return; }
   var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   var col = {};
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
-  if (!("doi" in col)) { toast_("doi 列がありません"); return; }
   var n = 0;
   eachSelectedDataRow_(sh, function (r) {
     var rowRange = sh.getRange(r, 1, 1, header.length);
     var row = rowRange.getValues()[0];
-    var doi = String(row[col.doi] || "").trim();
-    if (!doi) return;
-    var msg = fetchCrossref_(doi);
-    if (!msg) return;
-    if (fillRowFromCrossref_(row, col, type, msg)) {
-      var note = String(row[col.note] || "");
-      if (col.note != null && note.indexOf("crossref") < 0) {
-        row[col.note] = note ? note + "; crossref" : "crossref";
-      }
-      rowRange.setValues([row]);
-      n++;
-    }
+    if (enrichRow_(row, col, type)) { rowRange.setValues([row]); n++; }
   });
-  toast_(n + " 行を DOI で補完しました");
+  toast_(n + " 行を補完しました");
 }
 
-/**
- * 選択行をタイトルで補完（論文のみ）。DOI 未入力の行をタイトル（＋著者）で CrossRef 検索し、
- * 十分一致する候補の DOI を入れてから、CrossRef で空欄を補完する。
- */
-function enrichSelectedByTitle() {
-  var sh = SpreadsheetApp.getActiveSheet();
-  var type = TAB_TYPE[sh.getName()];
-  if (type !== "paper") { toast_("タイトル検索は論文タブのみ対応です"); return; }
-  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  var col = {};
-  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
-  if (!("doi" in col)) { toast_("doi 列がありません"); return; }
-  var found = 0, filled = 0;
-  eachSelectedDataRow_(sh, function (r) {
-    var rowRange = sh.getRange(r, 1, 1, header.length);
-    var row = rowRange.getValues()[0];
-    if (String(row[col.doi] || "").trim()) return;  // 既に DOI があれば DOI 補完側で対応
+/** 1 行を種別に応じて補完（DOI→CrossRef、論文は不足時タイトル検索、書籍は ISBN）。埋めたら true。 */
+function enrichRow_(row, col, type) {
+  var changed = false;
+  function addNote(tag) {
+    if (col.note == null) return;
+    var note = String(row[col.note] || "");
+    if (note.indexOf(tag) < 0) row[col.note] = note ? note + "; " + tag : tag;
+  }
+  var doi = ("doi" in col) ? String(row[col.doi] || "").trim() : "";
+  // 論文で DOI 未入力 → タイトル（＋著者）で DOI を特定。
+  if (type === "paper" && !doi && col.doi != null) {
     var title = String(row[col.title_en] || row[col.title_ja] || "").trim();
     var authors = String(col.authors != null ? row[col.authors] : "").trim();
-    var doi = resolveDoiByTitle_(title, authors);
-    if (!doi) return;
-    row[col.doi] = doi;
-    found++;
+    var found = resolveDoiByTitle_(title, authors);
+    if (found) { row[col.doi] = found; doi = found; changed = true; addNote("crossref-title"); }
+  }
+  // DOI があれば CrossRef で空欄補完。
+  if (doi) {
     var msg = fetchCrossref_(doi);
-    if (msg) fillRowFromCrossref_(row, col, type, msg);
-    var note = String(col.note != null ? row[col.note] : "");
-    if (col.note != null && note.indexOf("crossref-title") < 0) {
-      row[col.note] = note ? note + "; crossref-title" : "crossref-title";
+    if (msg && fillRowFromCrossref_(row, col, type, msg)) { changed = true; addNote("crossref"); }
+  }
+  // 書籍は ISBN からも補完。
+  if (type === "book" && "isbn" in col) {
+    var isbn = String(row[col.isbn] || "").trim();
+    if (isbn) {
+      var book = fetchBookByIsbn_(isbn);
+      if (book && fillRowFromBook_(row, col, book)) { changed = true; addNote("openlibrary"); }
     }
-    rowRange.setValues([row]);
-    filled++;
-  });
-  toast_(found + " 行で DOI を特定（" + filled + " 行を補完）しました");
+  }
+  return changed;
 }
 
 /** タイトルを単語トークンへ分解（小文字化・記号→空白・CJK は1トークン）。 */
@@ -169,36 +150,6 @@ function resolveDoiByTitle_(title, authors) {
     }
   }
   return "";
-}
-
-/**
- * 選択行を ISBN で補完（書籍のみ）。OpenLibrary から書名・出版社・出版日を取得し空欄を補完。
- */
-function enrichSelectedIsbn() {
-  var sh = SpreadsheetApp.getActiveSheet();
-  if (TAB_TYPE[sh.getName()] !== "book") { toast_("ISBN 補完は書籍タブのみ対応です"); return; }
-  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  var col = {};
-  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
-  if (!("isbn" in col)) { toast_("isbn 列がありません"); return; }
-  var n = 0;
-  eachSelectedDataRow_(sh, function (r) {
-    var rowRange = sh.getRange(r, 1, 1, header.length);
-    var row = rowRange.getValues()[0];
-    var isbn = String(row[col.isbn] || "").trim();
-    if (!isbn) return;
-    var book = fetchBookByIsbn_(isbn);
-    if (!book) return;
-    if (fillRowFromBook_(row, col, book)) {
-      if (col.note != null) {
-        var note = String(row[col.note] || "");
-        if (note.indexOf("openlibrary") < 0) row[col.note] = note ? note + "; openlibrary" : "openlibrary";
-      }
-      rowRange.setValues([row]);
-      n++;
-    }
-  });
-  toast_(n + " 行を ISBN で補完しました");
 }
 
 /** OpenLibrary から ISBN で書誌を取得（なければ null）。 */
@@ -674,264 +625,12 @@ function toast_(msg) {
   SpreadsheetApp.getActive().toast(msg, "業績DB", 5);
 }
 
-// ════════════════════════════════════════════════════════════════
-//  一括下書き（貼り付け → 表に展開 → 編集 → 取り込み）
-// ════════════════════════════════════════════════════════════════
-var STAGING_SHEET = "一括下書き";
-var STAGING_TABLE_COL = 3;   // 解析後テーブルの開始列（C）
-var STAGING_RAW_HEADER_ROW = 3;
-var STAGING_DATA_ROW = 4;
-
-// 種別ラベル ↔ 内部キー（タブ名は TAB_TYPE の逆引き）。
+// ── 共有の小ヘルパ／定数 ───────────────────────────────────────────
+// 種別キー → 日本語ラベル（点検レポート等の表示に使う）。
 var TYPE_LABELS = {
   paper: "原著論文・英文総説", book: "著書・和文総説", presentation: "発表・講演",
   award: "受賞", outreach: "アウトリーチ", publicity: "広報・パブリシティ"
 };
-var TYPE_TAB = {paper: "Original Papers", book: "Books", presentation: "presentations",
-                award: "Awards", outreach: "Outreach", publicity: "Publicity"};
-var TYPE_PREFIX = {paper: "PAP", book: "BK", presentation: "PRE",
-                   award: "AWD", outreach: "OUT", publicity: "PUB"};
-
-// Canonical 列（v2: 二ヶ国語は _ja/_en）。schema.py と一致。
-var CANON_FIELDS = {
-  paper: ["date", "category", "peer_reviewed", "authors", "title_ja", "title_en",
-          "journal_ja", "journal_en", "journal_abbr_ja", "journal_abbr_en",
-          "volume", "issue", "pages", "doi"],
-  book: ["date", "international", "peer_reviewed", "authors", "review_title_ja",
-         "review_title_en", "book_title_ja", "book_title_en", "chapter", "editor",
-         "volume", "issue", "pages", "publisher", "doi", "issn", "isbn"],
-  presentation: ["date", "scope", "title_ja", "title_en", "authors", "conference_ja",
-                 "conference_en", "symposium_ja", "symposium_en", "invited", "venue",
-                 "presentation_type"],
-  award: ["date", "scope", "authors", "title_ja", "title_en", "awarded_study", "organization"],
-  outreach: ["date", "scope", "authors", "title_ja", "title_en", "venue"],
-  publicity: ["date", "media_type", "media_name", "authors", "title_ja", "title_en", "link"]
-};
-// 選択肢（プルダウン）を持つフィールド。
-var FIELD_CHOICES = {
-  category: ["原著論文", "英文総説"], peer_reviewed: ["査読あり", "査読なし"],
-  international: ["国内", "国際"], scope: ["国内", "国際"],
-  invited: ["招待あり", "招待なし"], presentation_type: ["口頭", "ポスター", "口頭＆ポスター"],
-  media_type: ["新聞", "TV", "Web", "雑誌", "その他"]
-};
-
-// 解析用（publication_form.gs と同一ロジック）。
-var BILINGUAL_BASES = ["title", "journal", "journal_abbr", "book_title",
-                       "review_title", "conference", "symposium"];
-var PASTE_TITLE_FIELD = {paper: "title", book: "review_title", presentation: "title",
-                         award: "title", outreach: "title", publicity: "title"};
-var PASTE_VENUE_FIELD = {paper: "journal", book: "book_title", presentation: "conference",
-                         award: "organization", outreach: "venue", publicity: "media_name"};
 var EN_MONTHS = {jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
                  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12};
-
-function labelToTypeKey_(label) {
-  for (var k in TYPE_LABELS) { if (TYPE_LABELS[k] === label) return k; }
-  return null;
-}
 function hasCjk_(s) { return /[぀-ヿ㐀-鿿ｦ-ﾟ]/.test(String(s || "")); }
-
-function ensureBilingualValues_(v) {
-  BILINGUAL_BASES.forEach(function (base) {
-    if (v[base] == null) return;
-    var val = String(v[base]).trim();
-    delete v[base];
-    if (!val) return;
-    var slot = base + (hasCjk_(val) ? "_ja" : "_en");
-    if (!String(v[slot] || "").trim()) v[slot] = val;
-  });
-}
-
-function findDate_(line) {
-  var cands = [];
-  var m = /(\d{4})年\s*(\d{1,2})月(?:\s*(\d{1,2})日)?/.exec(line);
-  if (m) cands.push({start: m.index, y: +m[1], mo: +m[2], d: m[3]});
-  m = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b[.,]?\s*(?:(\d{1,2})\s*,?\s*)?(\d{4})/i.exec(line);
-  if (m) cands.push({start: m.index, y: +m[3], mo: EN_MONTHS[m[1].toLowerCase().slice(0, 3)], d: m[2]});
-  m = /(\d{4})[\/\-.](\d{1,2})(?:[\/\-.](\d{1,2}))?/.exec(line);
-  if (m) cands.push({start: m.index, y: +m[1], mo: +m[2], d: m[3]});
-  if (!cands.length) return null;
-  cands.sort(function (a, b) { return a.start - b.start; });
-  var c = cands[0];
-  return {start: c.start, dateStr: c.d ? (c.y + "/" + c.mo + "/" + (+c.d)) : (c.y + "/" + c.mo)};
-}
-function looksLikeAuthors_(line) {
-  return line.indexOf(",") >= 0 || line.indexOf("，") >= 0 || line.indexOf("、") >= 0;
-}
-function parseSource_(head, rtype, rec) {
-  var venue = head;
-  if (rtype === "paper" || rtype === "book") {
-    var vi = /(\d+)\s*\(\s*(\d+)\s*\)/.exec(venue);
-    if (vi) { rec.volume = vi[1]; rec.issue = vi[2]; venue = venue.replace(vi[0], " "); }
-    var pg = /(\d+)\s*[-–—―]\s*(\d+)/.exec(venue);
-    if (pg) { rec.pages = pg[1] + "-" + pg[2]; venue = venue.replace(pg[0], " "); }
-  }
-  venue = venue.replace(/\s{2,}/g, " ").replace(/^[\s,，、]+|[\s,，、]+$/g, "");
-  if (venue) rec[PASTE_VENUE_FIELD[rtype]] = venue;
-}
-function parseRecords_(text, rtype) {
-  var lines = String(text).split(/\r?\n/).map(function (s) { return s.trim(); })
-    .filter(function (s) { return s.length; });
-  var records = [], buf = [];
-  var paperLike = (rtype === "paper" || rtype === "book");
-  lines.forEach(function (line) {
-    var f = findDate_(line);
-    if (!f) { buf.push(line); return; }
-    var rec = {date: f.dateStr};
-    parseSource_(line.slice(0, f.start), rtype, rec);
-    if (buf.length) {
-      if (buf.length >= 2 && (paperLike || looksLikeAuthors_(buf[buf.length - 1]))) {
-        rec.authors = buf[buf.length - 1];
-        rec[PASTE_TITLE_FIELD[rtype]] = buf.slice(0, -1).join(" ").replace(/[\s.。]+$/, "");
-      } else {
-        rec[PASTE_TITLE_FIELD[rtype]] = buf.join(" ").replace(/[\s.。]+$/, "");
-      }
-    }
-    if (rec[PASTE_TITLE_FIELD[rtype]] || rec.authors) records.push(rec);
-    buf = [];
-  });
-  return records;
-}
-
-/** 一括下書きシートを作成（種別ドロップダウン＋貼り付け欄）。 */
-function stagingSetup() {
-  var ss = SpreadsheetApp.getActive();
-  var sh = ss.getSheetByName(STAGING_SHEET) || ss.insertSheet(STAGING_SHEET);
-  sh.clear();
-  sh.getRange("A1").setValue("種別").setFontWeight("bold");
-  var labels = Object.keys(TYPE_LABELS).map(function (k) { return TYPE_LABELS[k]; });
-  sh.getRange("B1").setDataValidation(
-    SpreadsheetApp.newDataValidation().requireValueInList(labels, true).build());
-  sh.getRange("B1").setValue(TYPE_LABELS.presentation);
-  sh.getRange("A2").setValue(
-    "使い方: B1で種別を選び、A4以降に researchmap 等の生テキストを貼り付け → "
-    + "メニュー「一括下書き: 表に展開」→ 右(C列〜)の表を確認・修正 → 「一括下書き: 取り込む」");
-  sh.getRange("A3").setValue("生テキスト（貼り付け・1行=1行／末尾に日付がある行が区切り）")
-    .setFontWeight("bold");
-  sh.setColumnWidth(1, 380);
-  sh.getRange("B1").activate();
-  toast_("一括下書きシートを準備しました。B1で種別→A4に貼り付け→「表に展開」。");
-}
-
-/** 生テキストを解析して右側に編集可能な表として展開。 */
-function stagingExpand() {
-  var ss = SpreadsheetApp.getActive();
-  var sh = ss.getSheetByName(STAGING_SHEET);
-  if (!sh) { toast_("先に「一括下書き: シートを準備」を実行してください"); return; }
-  var rtype = labelToTypeKey_(String(sh.getRange("B1").getValue()).trim());
-  if (!rtype) { toast_("B1 で種別を選んでください"); return; }
-
-  var last = sh.getLastRow();
-  var raw = last >= STAGING_DATA_ROW
-    ? sh.getRange(STAGING_DATA_ROW, 1, last - STAGING_DATA_ROW + 1, 1).getValues()
-        .map(function (r) { return r[0]; }).join("\n")
-    : "";
-  var recs = parseRecords_(raw, rtype);
-  recs.forEach(ensureBilingualValues_);
-
-  // 右側テーブル領域をクリアして書き直す。
-  var fields = CANON_FIELDS[rtype];
-  var maxCols = sh.getMaxColumns();
-  if (maxCols >= STAGING_TABLE_COL) {
-    sh.getRange(STAGING_RAW_HEADER_ROW, STAGING_TABLE_COL,
-                sh.getMaxRows() - STAGING_RAW_HEADER_ROW + 1, maxCols - STAGING_TABLE_COL + 1)
-      .clear();
-  }
-  sh.getRange(STAGING_RAW_HEADER_ROW, STAGING_TABLE_COL, 1, fields.length)
-    .setValues([fields]).setFontWeight("bold").setBackground("#DDEBF7");
-  if (recs.length) {
-    var rows = recs.map(function (rec) {
-      return fields.map(function (f) { return rec[f] != null ? rec[f] : ""; });
-    });
-    sh.getRange(STAGING_DATA_ROW, STAGING_TABLE_COL, rows.length, fields.length).setValues(rows);
-  }
-  // 選択肢フィールドにプルダウンを設定。
-  fields.forEach(function (f, i) {
-    if (FIELD_CHOICES[f]) {
-      sh.getRange(STAGING_DATA_ROW, STAGING_TABLE_COL + i, Math.max(recs.length, 50), 1)
-        .setDataValidation(
-          SpreadsheetApp.newDataValidation().requireValueInList(FIELD_CHOICES[f], true).build());
-    }
-  });
-  toast_(recs.length + " 件を表に展開しました（" + TYPE_LABELS[rtype] + "）。確認・修正して「取り込む」。");
-}
-
-/** 右側テーブルの内容を該当タブへ status=未確認 で取り込み、下書きをクリア。 */
-function stagingImport() {
-  var ss = SpreadsheetApp.getActive();
-  var sh = ss.getSheetByName(STAGING_SHEET);
-  if (!sh) { toast_("先に「一括下書き: シートを準備」を実行してください"); return; }
-  var rtype = labelToTypeKey_(String(sh.getRange("B1").getValue()).trim());
-  if (!rtype) { toast_("B1 で種別を選んでください"); return; }
-
-  var fields = CANON_FIELDS[rtype];
-  var last = sh.getLastRow();
-  if (last < STAGING_DATA_ROW) { toast_("表が空です。先に「表に展開」を。"); return; }
-  var table = sh.getRange(STAGING_DATA_ROW, STAGING_TABLE_COL,
-                          last - STAGING_DATA_ROW + 1, fields.length).getValues();
-  var recs = [];
-  table.forEach(function (row) {
-    var rec = {};
-    var any = false;
-    fields.forEach(function (f, i) {
-      var v = row[i];
-      if (v !== "" && v != null) { rec[f] = v; any = true; }
-    });
-    if (any) recs.push(rec);
-  });
-  if (!recs.length) { toast_("取り込む行がありません"); return; }
-
-  var added = appendBatch_(ss, rtype, recs, "staging");
-
-  // 取り込んだら下書き（生テキスト＋表）をクリア。
-  sh.getRange(STAGING_DATA_ROW, 1, sh.getMaxRows() - STAGING_DATA_ROW + 1, sh.getMaxColumns())
-    .clear();
-  toast_(added + " 件を「" + TYPE_TAB[rtype] + "」へ取り込みました（status=未確認）。");
-}
-
-/** recs（field→値）を該当タブへ追記。重複は note=dup_of でフラグ。追記件数を返す。 */
-function appendBatch_(ss, rtype, recs, source) {
-  var sheet = ss.getSheetByName(TYPE_TAB[rtype]);
-  if (!sheet) { toast_("タブが見つかりません: " + TYPE_TAB[rtype]); return 0; }
-  var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var col = {};
-  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
-  var titleOnly = (rtype === "paper" || rtype === "book");
-
-  // 既存行のキー→record_id マップ。
-  var keyToId = {};
-  var last = sheet.getLastRow();
-  if (last >= 2) {
-    var ex = sheet.getRange(2, 1, last - 1, header.length).getValues();
-    ex.forEach(function (row) {
-      var c = function (n) { return n in col ? row[col[n]] : ""; };
-      var t = String(c("title_ja") || c("title_en") || c("book_title_ja") || c("book_title_en") || "").trim();
-      var rid = String(c("record_id") || "").trim();
-      dupKeysOf_(c("doi"), c("date"), t, titleOnly).forEach(function (k) { if (!keyToId[k]) keyToId[k] = rid; });
-    });
-  }
-
-  var rows = [];
-  recs.forEach(function (rec) {
-    var t = String(rec.title_ja || rec.title_en || rec.book_title_ja || rec.book_title_en || "").trim();
-    var keys = dupKeysOf_(rec.doi, rec.date, t, titleOnly);
-    var dupId = "";
-    for (var j = 0; j < keys.length; j++) { if (keyToId[keys[j]]) { dupId = keyToId[keys[j]]; break; } }
-    var rid = TYPE_PREFIX[rtype] + "-" + ("000" + (sheet.getLastRow() + rows.length)).slice(-4);
-    var meta = {
-      record_id: rid, status: APP_STATUS_NEW, submitter: "", source: source,
-      created_at: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
-      note: dupId ? ("dup_of=" + dupId) : ""
-    };
-    rows.push(header.map(function (h) {
-      var key = String(h).trim();
-      if (key in meta) return meta[key];
-      return (key in rec) ? rec[key] : "";
-    }));
-    keys.forEach(function (k) { if (!keyToId[k]) keyToId[k] = rid; });
-  });
-  if (rows.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, header.length).setValues(rows);
-  }
-  return rows.length;
-}
