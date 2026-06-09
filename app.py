@@ -112,7 +112,9 @@ def main() -> None:
         st.header(tr("sb_datasource", lang))
         url = st.text_input(tr("url_label", lang), value=DEFAULT_SHEET_ID, help=tr("url_help", lang))
         if st.button(tr("reload_btn", lang)):
-            st.cache_data.clear()
+            # データ取得のキャッシュのみ無効化（全 cache_data を消さない）。
+            load_all.clear()
+            fetch_bytes.clear()
 
     try:
         df, members = load_all(url)
@@ -172,6 +174,8 @@ def main() -> None:
 
     # ── 種別ごとに整形・表示（0件はスキップ）──────────────────
     shown = 0
+    all_md: list[str] = []  # 全種別まとめてコピー用（リッチ）
+    all_plain: list[str] = []  # 同上（プレーン）
     for rtype in selected_types:
         sub = filtered[filtered["type"] == rtype]
         if sub.empty:
@@ -246,8 +250,21 @@ def main() -> None:
         with st.expander(tr("plain_expander", lang)):
             st.code(result["plain"], language=None)
 
+        if result["markdown"]:
+            all_md.append(f"#### {label}\n\n{result['markdown']}")
+        if result["plain"]:
+            all_plain.append(f"【{label}】\n{result['plain']}")
+
     if shown == 0:
         st.info(tr("no_match_info", lang))
+    elif shown > 1:
+        # 複数種別が表示されているときだけ、まとめてコピーを提供する。
+        st.divider()
+        st.subheader(tr("copy_all_header", lang))
+        st.caption(tr("copy_all_hint", lang))
+        st.markdown("\n\n".join(all_md))
+        with st.expander(tr("plain_expander", lang)):
+            st.code("\n\n".join(all_plain), language=None)
 
 
 if __name__ == "__main__":

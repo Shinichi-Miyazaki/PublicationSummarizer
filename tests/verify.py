@@ -45,7 +45,7 @@ from publication_summarizer.loader import (  # noqa: E402
 )
 from publication_summarizer.filters import by_peer_reviewed  # noqa: E402
 from publication_summarizer.i18n import rt_label, tr  # noqa: E402
-from publication_summarizer.roster import Member  # noqa: E402
+from publication_summarizer.roster import Member, split_authors  # noqa: E402
 from publication_summarizer.schema import BILINGUAL_FIELDS, display_fields  # noqa: E402
 from tests.test_form_fields import form_field_tests, template_header_tests  # noqa: E402
 
@@ -94,10 +94,26 @@ def unit_tests() -> None:
     check("with period", m.matches_member("Naoko Hayashi.", hayashi))
     check("japanese", m.matches_member("林 直子", hayashi))
     check("not other person", not m.matches_member("Taro Yamada", hayashi))
+    # 精度: 同姓でも名（頭文字）が違えば別人として不一致にする。
+    check("同姓別人(Yu Hayashi)は不一致", not m.matches_member("Yu Hayashi", hayashi))
+    check("同姓別人(Kenji Hayashi)は不一致", not m.matches_member("Kenji Hayashi", hayashi))
+    check("姓のみ(特定不能)は不一致", not m.matches_member("Hayashi", hayashi))
     check(
-        "record has any",
-        m.record_has_any("Okamura H, Yasugaki S, Hayashi Y", members),
+        "record has member (Miyazaki S を含む)",
+        m.record_has_any("Okamura H, Yasugaki S, Miyazaki S", members),
     )
+    check(
+        "record has none (同姓別人のみ)",
+        not m.record_has_any("Okamura H, Yasugaki S, Hayashi Y", members),
+    )
+
+    print("[unit] split_authors（区切り・et al. 除去）")
+    check("カンマ区切り", split_authors("A, B, C") == ["A", "B", "C"])
+    check("and / & / ; も区切る",
+          split_authors("A, B and C; D & E") == ["A", "B", "C", "D", "E"])
+    check("末尾 et al. を除去", split_authors("Smith J, et al.") == ["Smith J"])
+    check("末尾 ほかN名 を除去", split_authors("宮崎 慎一, ほか3名") == ["宮崎 慎一"])
+    check("and を含む姓を割らない", split_authors("Anderson J, Bond K") == ["Anderson J", "Bond K"])
 
 
 def author_style_tests() -> None:
