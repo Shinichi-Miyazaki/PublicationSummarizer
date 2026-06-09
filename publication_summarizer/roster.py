@@ -20,6 +20,12 @@ _ROSTER_RE = re.compile(r"^(?P<ja>.+?)\s{2,}(?P<last>[A-Za-z'’\-]+),\s*(?P<fir
 # 著者トークンから除去する注記（Co-first author 等）。
 _ANNOTATION_RE = re.compile(r"\(\s*\*?\s*(co-first|co-corresponding|corresponding|equal)[^)]*\)", re.I)
 
+# 著者区切り（カンマ・セミコロン・& ・語境界の and）。
+_AUTHOR_SEP_RE = re.compile(r"\s*[;,]\s*|\s+and\s+|\s*&\s*", re.I)
+
+# 著者リスト末尾の省略表記（et al. / ほかN名 / 他）。分割前に除去する。
+_ETAL_TAIL_RE = re.compile(r"[,，、]?\s*(et\s*al\.?|ほか.*|他\s*\d*\s*名?)\s*$", re.I)
+
 
 def normalize(text: str) -> str:
     """比較用に正規化（Unicode 正規化・小文字化・記号除去・空白圧縮）。"""
@@ -95,12 +101,17 @@ def parse_roster(raw: pd.DataFrame) -> list[Member]:
 
 
 def split_authors(authors_raw: str) -> list[str]:
-    """著者セルを個々の著者文字列に分割（カンマ区切り、注記除去）。"""
+    """著者セルを個々の著者文字列に分割。
+
+    区切りはカンマ／セミコロン／"&"／語境界の "and"。注記（Co-first 等）と
+    末尾の省略表記（et al. / ほかN名 / 他）を除去してから分割する。
+    """
     if not authors_raw:
         return []
     text = _ANNOTATION_RE.sub("", str(authors_raw))
+    text = _ETAL_TAIL_RE.sub("", text)  # 末尾の et al./ほか…/他 を除去
     # 先頭/末尾の "*"（共同筆頭マーク等）も除去。Markdown で誤って斜体にならないように。
-    parts = [p.strip(" .;*　") for p in text.split(",")]
+    parts = [p.strip(" .;*　") for p in _AUTHOR_SEP_RE.split(text)]
     return [p for p in parts if p]
 
 
@@ -120,13 +131,21 @@ class AuthorMatcher:
         norm = normalize(author_token)
         if not norm:
             return False
-        # 第1段: 決定的
+        # 第1段: 決定的エイリアス完全一致（正規の初期化形はここで当たる）。
         if norm in member.aliases:
             return True
-        # 第2段: あいまい一致（姓を含む or 高類似のときのみ）
+        parts = norm.split()
         last = member.last.lower()
-        if last and last in norm.split():
-            return True
+        # 第2段: 姓一致は「名（または頭文字）一致」を AND 条件にする。
+        # 姓だけの一致は同姓の別人を取り違えるため採用しない。
+        if last and last in parts:
+            first = member.first.lower()
+            fi = first[:1]
+            given = [p for p in parts if p != last]
+            return any(p == first or p[:1] == fi for p in given)
+        # 第3段: 姓が現れないときのみ fuzzy 救済（表記揺れ・順序違い等）。
+        # 姓が在る場合に fuzzy を使うと "Hayashi Y" と "Hayashi N" の1文字違いを
+        # 誤って拾うため、姓不在に限定する。
         score = max(fuzz.token_sort_ratio(norm, a) for a in member.aliases)
         return score >= self.threshold
 
@@ -139,13 +158,3 @@ class AuthorMatcher:
         return any(
             self.matches_member(t, m) for t in tokens for m in members
         )
-
-
-# --- 将来拡張用フック（v1 未実装）------------------------------------------------
-def resolve_with_llm(unique_author_tokens: list[str]) -> dict[str, str]:
-    """ユニーク著者文字列を LLM で名寄せクラスタリングする想定の拡張点（未実装）。
-
-    クエリ毎ではなくユニーク著者に対し1回・結果キャッシュ前提で呼ぶ設計余地を残す。
-    必要になれば Claude API（prompt caching）等で実装する。
-    """
-    raise NotImplementedError("LLM 名寄せは v1 のスコープ外です。")

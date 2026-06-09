@@ -113,6 +113,11 @@ STRINGS: dict[str, tuple[str, str]] = {
         "条件に合う業績がありません。絞り込みを見直してください。",
         "No publications match. Try adjusting the filters.",
     ),
+    "copy_all_header": ("📋 すべてまとめてコピー", "📋 Copy everything at once"),
+    "copy_all_hint": (
+        "選択中の全種別を1つにまとめました。下のリッチ表示をドラッグコピーすると書式も保持されます。",
+        "All selected types combined into one. Drag-copy the rich text below to keep formatting.",
+    ),
     "fy_heading": ("{y}年度", "FY {y}"),
 }
 
@@ -176,7 +181,8 @@ def _pick(pair: tuple[str, str], lang: str) -> str:
 
 
 def tr(key: str, lang: str) -> str:
-    return _pick(STRINGS[key], lang)
+    # キー欠落時は key をそのまま返す（rt_label/ph_label と対称のフォールバック）。
+    return _pick(STRINGS.get(key, (key, key)), lang)
 
 
 def rt_label(rtype: str, lang: str) -> str:
