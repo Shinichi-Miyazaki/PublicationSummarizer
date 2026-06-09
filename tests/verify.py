@@ -29,7 +29,13 @@ from publication_summarizer import (  # noqa: E402
     parse_roster,
     render_records,
 )
-from publication_summarizer.formatter import clean_number, render_one, _cleanup  # noqa: E402
+from publication_summarizer.formatter import (  # noqa: E402
+    AuthorStyle,
+    clean_number,
+    render_authors,
+    render_one,
+    _cleanup,
+)
 from publication_summarizer.loader import (  # noqa: E402
     _fiscal_year,
     _has_cjk,
@@ -94,6 +100,48 @@ def unit_tests() -> None:
     )
 
 
+def author_style_tests() -> None:
+    """著者整形（人数省略・自己強調・言語別省略語・二重太字回避）の検証。"""
+    print("[unit] render_authors（省略・言語別省略語）")
+    five = "A, B, C, D, E"
+    check("全員(max=0)", render_authors(five, AuthorStyle()) == "A, B, C, D, E")
+    check("上位3+et al(en)",
+          render_authors(five, AuthorStyle(max_authors=3), "en") == "A, B, C, et al.")
+    check("上位3+ほか(ja)",
+          render_authors(five, AuthorStyle(max_authors=3), "ja") == "A, B, C, ほか")
+    check("ほかN名(ja, count)",
+          render_authors(five, AuthorStyle(max_authors=3, etal_count=True), "ja") == "A, B, C, ほか2名")
+    check("省略語の明示指定",
+          render_authors(five, AuthorStyle(max_authors=2, etal="…ほか"), "ja") == "A, B, …ほか")
+
+    print("[unit] render_authors（自己強調 × 省略の協調）")
+    hl = lambda t: t == "Miyazaki S"  # noqa: E731
+    inr = "Miyazaki S, A, B, C, D"
+    check("強調が範囲内(plain)",
+          render_authors(inr, AuthorStyle(max_authors=3), "en", hl) == "Miyazaki S, A, B, et al.")
+    check("強調が範囲内(md太字)",
+          render_authors(inr, AuthorStyle(max_authors=3), "en", hl, markdown=True)
+          == "**Miyazaki S**, A, B, et al.")
+    mid = "A, B, C, D, E, Miyazaki S, Z"
+    check("強調が中間→…+et al",
+          render_authors(mid, AuthorStyle(max_authors=3), "en", hl) == "A, B, C, …, Miyazaki S, et al.")
+    tail = "A, B, C, D, E, Miyazaki S"
+    check("強調が末尾→…のみ(et alなし)",
+          render_authors(tail, AuthorStyle(max_authors=3), "en", hl) == "A, B, C, …, Miyazaki S")
+    check("emphasis=none は太字にしない",
+          render_authors(inr, AuthorStyle(max_authors=3, emphasis="none"), "en", hl, markdown=True)
+          == "Miyazaki S, A, B, et al.")
+    check("plain は強調マーカーなし", "**" not in render_authors(mid, AuthorStyle(max_authors=3), "en", hl))
+
+    print("[unit] 二重太字回避（authors を bold 指定 + 自己強調 bold）")
+    rec = {"type": "paper", "label": "x", "authors_raw": "Miyazaki S, A, B",
+           "title_en": "T", "title_ja": "T", "date": None}
+    out = render_one(rec, "{authors}. {title}", (), AuthorStyle(emphasis="bold"),
+                     True, {"authors"}, set(), "en", hl)
+    check("**** が出ない", "****" not in out, out)
+    check("内側の強調は残る", "**Miyazaki S**" in out, out)
+
+
 def v2_tests() -> None:
     """v2（二ヶ国語・査読正規化・upgrade）の純関数・往復検証。"""
     import pandas as pd
@@ -116,8 +164,8 @@ def v2_tests() -> None:
         "date": _parse_date("2026/04/10"),
     }
     pat = "{authors}. {title}. {journal}. {year}"
-    en = render_one(rec, pat, (), ", ", False, set(), set(), "en")
-    ja = render_one(rec, pat, (), ", ", False, set(), set(), "ja")
+    en = render_one(rec, pat, (), AuthorStyle(), False, set(), set(), "en")
+    ja = render_one(rec, pat, (), AuthorStyle(), False, set(), set(), "ja")
     check("en はタイトル英語", "REM sleep in mice" in en, en)
     check("ja はタイトル日本語", "マウスのレム睡眠" in ja, ja)
     check("journal はja空→en採用(フォールバック)", "Sci Rep" in ja and "Sci Rep" in en)
@@ -361,6 +409,7 @@ _FIXTURE = Path(__file__).resolve().parent / "fixtures" / "canonical_sample.xlsx
 
 def main() -> None:
     unit_tests()
+    author_style_tests()
     form_field_tests(check)
     template_header_tests(check)
     v2_tests()

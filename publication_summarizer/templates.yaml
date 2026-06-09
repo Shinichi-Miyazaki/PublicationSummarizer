@@ -15,6 +15,12 @@
 #   sort       : "date_desc" | "date_asc"（既定 date_desc）
 #   group_by   : "fiscal_year" で年度見出しを付与
 #   numbering  : true で連番付与
+#   ── 著者の表示（いずれも UI から上書き可。既定は全員表示＝従来どおり）──
+#   author_max              : 表示する著者数（0=全員。超過分は省略語でまとめる）
+#   author_etal             : 省略語（空＝言語自動: ja「ほか」/ en「et al.」）
+#   author_etal_count       : true で「ほかN名」と残数を表示（日本語向け）
+#   author_keep_highlighted : true で選択著者を省略せず必ず表示（既定 true）
+#   author_emphasis         : "bold"（選択著者を太字）| "none"（既定 bold）
 
 paper:
   科研費:

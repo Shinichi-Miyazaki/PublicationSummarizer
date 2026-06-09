@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -47,9 +49,94 @@ def _year(date) -> str:
     return ""
 
 
-def format_authors(authors_raw: str, sep: str) -> str:
-    """著者文字列を整形（個々の著者を区切り記号で連結）。"""
-    return sep.join(split_authors(authors_raw))
+@dataclass(frozen=True)
+class AuthorStyle:
+    """著者整形の設定（プリセット／UI から構築し、YAML・UI・テストが共有する）。"""
+
+    sep: str = ", "  # 著者間の区切り
+    max_authors: int = 0  # 表示上限（0 = 全員）
+    etal: str = ""  # 省略語（空なら言語既定: ja「ほか」/ en「et al.」）
+    etal_count: bool = False  # True で「ほかN名」形式（残数を明示。ja 向け）
+    keep_highlighted: bool = True  # 強調著者は省略対象外（上限超でも必ず残す）
+    emphasis: str = "bold"  # 強調著者の装飾: "bold" | "none"
+
+
+_ELLIPSIS = "…"  # 中間省略（強調著者を残した際の欠落箇所）を表す記号
+
+
+def author_style_from_template(t: dict) -> AuthorStyle:
+    """テンプレート／UI 上書き dict から AuthorStyle を構築（欠損は既定値）。"""
+    return AuthorStyle(
+        sep=t.get("author_sep", ", "),
+        max_authors=int(t.get("author_max", 0) or 0),
+        etal=str(t.get("author_etal", "") or ""),
+        etal_count=bool(t.get("author_etal_count", False)),
+        keep_highlighted=bool(t.get("author_keep_highlighted", True)),
+        emphasis=str(t.get("author_emphasis", "bold") or "bold"),
+    )
+
+
+def _etal_marker(style: AuthorStyle, lang: str, remaining: int) -> str:
+    """末尾省略語を返す。etal_count かつ ja のときのみ「ほかN名」と残数を付す。"""
+    base = style.etal or ("ほか" if lang == "ja" else "et al.")
+    if style.etal_count and lang == "ja":
+        return f"{base}{remaining}名"
+    return base
+
+
+def render_authors(
+    authors_raw: str,
+    style: AuthorStyle,
+    lang: str = "ja",
+    highlight: Callable[[str], bool] | None = None,
+    markdown: bool = False,
+) -> str:
+    """著者文字列を整形（人数省略・自己強調・言語別省略語に対応）。
+
+    - 上限超のときは先頭から `max_authors` 名を表示。`keep_highlighted` の場合、
+      範囲外でも強調著者は必ず残す（順序保持）。
+    - 表示著者間に欠落があれば中略記号 `…`、最後の表示著者の後ろに著者が残る場合のみ
+      末尾に省略語（et al. / ほか）。→ 強調著者が末尾なら省略語は付かない。
+    - `markdown` かつ emphasis="bold" のとき、強調著者を **太字** にする。
+    """
+    tokens = split_authors(authors_raw)
+    if not tokens:
+        return ""
+    n = len(tokens)
+    is_hl = [bool(highlight and highlight(t)) for t in tokens]
+
+    if style.max_authors and n > style.max_authors:
+        shown_idx = [
+            i for i in range(n)
+            if i < style.max_authors or (style.keep_highlighted and is_hl[i])
+        ]
+    else:
+        shown_idx = list(range(n))
+
+    def render_tok(i: int) -> str:
+        if markdown and style.emphasis == "bold" and is_hl[i]:
+            return f"**{tokens[i]}**"
+        return tokens[i]
+
+    parts: list[str] = []
+    prev: int | None = None
+    for i in shown_idx:
+        if prev is not None and i > prev + 1:
+            parts.append(_ELLIPSIS)  # 中間の欠落
+        parts.append(render_tok(i))
+        prev = i
+
+    if shown_idx[-1] < n - 1:  # 末尾にまだ著者が残る → 省略語
+        parts.append(_etal_marker(style, lang, n - len(shown_idx)))
+
+    return style.sep.join(parts)
+
+
+def has_highlighted_author(authors_raw: str, highlight: Callable[[str], bool] | None) -> bool:
+    """著者中に強調対象が含まれるか（二重太字回避の判定に使う）。"""
+    if not highlight:
+        return False
+    return any(highlight(t) for t in split_authors(authors_raw))
 
 
 def _style(value: str, key: str, bold: set[str], italic: set[str]) -> str:
@@ -108,11 +195,12 @@ def _resolve_lang(fields: dict, lang: str) -> None:
 def _build_fields(
     rec: dict,
     spec_numeric: tuple[str, ...],
-    sep: str,
+    style: AuthorStyle,
     markdown: bool,
     bold: set[str],
     italic: set[str],
     lang: str = "ja",
+    highlight: Callable[[str], bool] | None = None,
 ) -> dict:
     fields = {}
     for k, v in rec.items():
@@ -132,7 +220,12 @@ def _build_fields(
         if isinstance(rec.get("date"), pd.Timestamp) and not pd.isna(rec.get("date"))
         else ""
     )
-    fields["authors"] = format_authors(rec.get("authors_raw", ""), sep)
+    authors_raw = rec.get("authors_raw", "")
+    fields["authors"] = render_authors(authors_raw, style, lang, highlight, markdown)
+    # 二重太字回避: 著者強調(bold)が実際に効くなら {authors} のフィールド単位 bold は外す
+    # （内側 **member** と外側 **…** の入れ子破綻を防ぐ。italic は両立するため許可）。
+    if markdown and style.emphasis == "bold" and has_highlighted_author(authors_raw, highlight):
+        bold = bold - {"authors"}
     # 太字／斜体は Markdown 出力のみ、非空フィールドにだけ付与する。
     if markdown and (bold or italic):
         for k in list(fields.keys()):
@@ -144,13 +237,14 @@ def render_one(
     rec: dict,
     pattern: str,
     spec_numeric: tuple[str, ...],
-    sep: str,
+    style: AuthorStyle,
     markdown: bool,
     bold: set[str],
     italic: set[str],
     lang: str = "ja",
+    highlight: Callable[[str], bool] | None = None,
 ) -> str:
-    fields = _build_fields(rec, spec_numeric, sep, markdown, bold, italic, lang)
+    fields = _build_fields(rec, spec_numeric, style, markdown, bold, italic, lang, highlight)
     raw = pattern.format_map(_SafeDict(fields))
     return _cleanup(raw)
 
@@ -167,15 +261,18 @@ def render_records(
     bold_fields: set[str] | None = None,
     italic_fields: set[str] | None = None,
     lang: str = "ja",
+    highlight: Callable[[str], bool] | None = None,
 ) -> dict:
     """1種別の業績群を template に従って整形し、markdown と plain を返す。
+
+    highlight: 著者トークン -> 強調対象か を返す述語（選択メンバー判定。app 側が生成）。
 
     Returns
     -------
     {"markdown": str, "plain": str, "count": int}
     """
     pattern = template.get("pattern", "{authors}. {title}.")
-    sep = template.get("author_sep", ", ")
+    style = author_style_from_template(template)
     sort = template.get("sort", "date_desc")
     group_by = template.get("group_by")
     numbering = template.get("numbering", False)
@@ -194,8 +291,8 @@ def render_records(
         for i, (_, rec) in enumerate(records.iterrows(), start=1):
             prefix = f"{i}. " if numbering else ""
             d = rec.to_dict()
-            md = render_one(d, pattern, numeric_fields, sep, True, bold, italic, lang)
-            tx = render_one(d, pattern, numeric_fields, sep, False, set(), set(), lang)
+            md = render_one(d, pattern, numeric_fields, style, True, bold, italic, lang, highlight)
+            tx = render_one(d, pattern, numeric_fields, style, False, set(), set(), lang, highlight)
             md_lines.append(f"{prefix}{md}")
             txt_lines.append(f"{prefix}{tx}")
 
