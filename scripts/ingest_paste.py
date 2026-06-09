@@ -35,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ingest_to_canonical import CANONICAL_FIELDS, TAB_NAME, write_canonical  # noqa: E402
+from llm_parse import DEFAULT_MODEL, LLMParseError, parse_records_llm  # noqa: E402
 
 # 種別 → タイトル/会場相当フィールド（base 名）。二ヶ国語 base は後段で _ja/_en へ分割。
 TITLE_FIELD = {"paper": "title", "book": "review_title", "presentation": "title",
@@ -143,6 +144,11 @@ def main() -> None:
     ap.add_argument("--src", help="貼り付けテキストのファイル。省略時は標準入力から読む。")
     ap.add_argument("--out", help="出力 Canonical xlsx（新規作成）")
     ap.add_argument("--append", help="既存 Canonical xlsx に追記（重複除外）")
+    ap.add_argument("--llm", action="store_true",
+                    help="GitHub Models(OpenAI互換) で構造化抽出する（要 GITHUB_TOKEN）。"
+                         "失敗時は従来のヒューリスティック解析へ自動フォールバック。")
+    ap.add_argument("--model", default=DEFAULT_MODEL,
+                    help=f"LLM モデルID（既定: {DEFAULT_MODEL}）。--llm 指定時のみ有効。")
     args = ap.parse_args()
 
     try:
@@ -161,7 +167,16 @@ def main() -> None:
         print("テキストを貼り付け、最後に EOF（Windows: Ctrl+Z→Enter / Mac・Linux: Ctrl+D）:")
         text = sys.stdin.read()
 
-    recs = parse_records(text, args.rtype)
+    if args.llm:
+        try:
+            recs = parse_records_llm(text, args.rtype, model=args.model)
+            print(f"[LLM] {args.model} で {len(recs)} 件を構造化抽出しました。")
+        except LLMParseError as exc:
+            print(f"[警告] LLM 解析に失敗（{exc}）。従来のヒューリスティック解析にフォールバックします。")
+            recs = parse_records(text, args.rtype)
+    else:
+        recs = parse_records(text, args.rtype)
+
     if not recs:
         print("[警告] 取り込める行が見つかりませんでした。各件の末尾に日付（YYYY年M月）があるか確認してください。")
         return

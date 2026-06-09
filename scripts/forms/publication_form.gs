@@ -24,12 +24,22 @@
 
 // ▼▼▼ ここだけ書き換える ▼▼▼
 var CANONICAL_SHEET_ID = "1_7b_-6EsRNr6tW1naDj8QJ5M0espE5Wv";
+
 // ▲▲▲ ここだけ書き換える ▲▲▲
 
 // Canonical 各タブの先頭メタ列（schema.py / ingest と同一）。
 var META_FIELDS = ["record_id", "status", "submitter", "source", "created_at", "note"];
 var APP_STATUS_NEW = "未確認"; // 取込直後の status。確認後にキュレーターが「確認済」へ。
 var SOURCE_LABEL = "form";
+
+// 一括貼り付けの LLM 構造化（任意）。GitHub Models（OpenAI 互換・無料枠）を使う。
+// トークンはコードに直書きせず、プロジェクトの設定 → スクリプト プロパティに
+// キー名「GITHUB_MODELS_TOKEN」で PAT（models:read 権限）を登録する（手順は docs/google-forms.md）。
+// 未登録なら従来のヒューリスティック解析にフォールバックする。
+var LLM_BASE_URL = "https://models.github.ai/inference";
+
+var LLM_MODEL = "openai/gpt-4o-mini";
+var LLM_TOKEN_PROP = "GITHUB_MODELS_TOKEN";
 
 /**
  * 種別ごとの設問定義。
@@ -103,7 +113,7 @@ var FIELD_MAP = {
       {"field": "symposium_en", "title": "シンポジウム名（English・任意）", "title_en": "Symposium (English, optional)", "type": "text", "required": false},
       {"field": "invited", "title": "招待の有無", "title_en": "Invited", "type": "radio", "required": false, "choices": ["招待あり", "招待なし"], "help": "招待あり = Invited / 招待なし = Not invited"},
       {"field": "venue", "title": "開催地", "title_en": "Venue", "type": "text", "required": false, "help": "例 / e.g. 横浜 / Yokohama"},
-      {"field": "presentation_type", "title": "発表形式", "title_en": "Presentation type", "type": "radio", "required": false, "choices": ["口頭", "ポスター"], "help": "口頭 = Oral / ポスター = Poster"}
+      {"field": "presentation_type", "title": "発表形式", "title_en": "Presentation type", "type": "radio", "required": false, "choices": ["口頭", "ポスター", "口頭＆ポスター"], "help": "口頭 = Oral / ポスター = Poster / 口頭＆ポスター = Oral & poster（両方の場合）"}
     ]
   },
   "award": {
@@ -352,11 +362,20 @@ function routeBulk_(byId, map, reporter) {
     return;
   }
   var text = String(byId[map.bulkTextId] || "");
-  var recs = parseRecords_(text, type);
+  // LLM 構造化を試み、失敗（トークン無・API/JSON エラー）時は従来解析へフォールバック。
+  var recs, source = "paste-form";
+  try {
+    recs = parseRecordsLlm_(text, type);
+    source = "paste-llm";
+    Logger.log("[routeBulk] LLM 解析: " + recs.length + " 件");
+  } catch (e) {
+    Logger.log("[routeBulk] LLM 不使用→従来解析（" + e + "）");
+    recs = parseRecords_(text, type);
+  }
   var ss = SpreadsheetApp.openById(CANONICAL_SHEET_ID);
   var n = 0;
   recs.forEach(function (rec) {
-    appendOne_(ss, type, rec, reporter, "paste-form");
+    appendOne_(ss, type, rec, reporter, source);
     n++;
   });
   Logger.log("[routeBulk] " + type + " を " + n + " 件追記しました。");
@@ -376,10 +395,16 @@ function appendOne_(ss, type, values, reporter, source) {
   }
 
   var notes = [];
+  // 論文で DOI 未入力なら、タイトル（＋著者）で CrossRef を検索して DOI を特定する。
+  if (type === "paper" && !String(values.doi || "").trim() && resolveDoiByTitle_(values)) {
+    notes.push("crossref-title");
+  }
   if (enrichFromDoi_(type, values)) notes.push("crossref");
+  // 書籍は ISBN から書名・出版社・出版日を補完（OpenLibrary）。
+  if (type === "book" && enrichFromIsbn_(values)) notes.push("openlibrary");
 
   var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var dupOf = findDuplicate_(sheet, header, values);
+  var dupOf = findDuplicate_(sheet, header, values, type);
   if (dupOf) notes.push("dup_of=" + dupOf);
 
   var meta = {
@@ -403,12 +428,22 @@ function ymOf_(s) {
   var m = String(s || "").match(/(\d{4})\D+(\d{1,2})/);
   return m ? (m[1] + "/" + ("0" + m[2]).slice(-2)) : String(s || "").trim();
 }
-function doiKeyOf_(doi) {
-  doi = String(doi || "").trim().toLowerCase();
-  return doi ? ("doi:" + doi) : "";
+function cleanDoi_(doi) {
+  var d = String(doi || "").trim().toLowerCase();
+  return d.replace(/^\s*(https?:\/\/(dx\.)?doi\.org\/|doi\s*[:：]\s*)/, "").trim();
 }
-function dtKeyOf_(date, title) {
-  return "dt:" + ymOf_(date) + "|" + String(title || "").trim().toLowerCase().slice(0, 40);
+function normTitle_(t) {
+  return String(t || "").toLowerCase().replace(/[^0-9a-z぀-ヿ㐀-鿿]/g, "");
+}
+/** 重複検出キーの配列（いずれか一致で重複）。論文・著書はタイトル一致のみでも重複。 */
+function dupKeysOf_(doi, date, title, titleOnly) {
+  var keys = [];
+  var cd = cleanDoi_(doi);
+  if (cd) keys.push("doi:" + cd);
+  var nt = normTitle_(title);
+  if (titleOnly && nt.length >= 8) keys.push("t:" + nt);
+  keys.push("dt:" + ymOf_(date) + "|" + nt.slice(0, 40));
+  return keys;
 }
 
 // ── 一括貼り付けの解析（ingest_paste.py の移植） ──────────────────
@@ -495,6 +530,116 @@ function parseRecords_(text, rtype) {
   return records;
 }
 
+// ── 一括貼り付けの LLM 構造化（GitHub Models / OpenAI 互換・任意） ──────────
+/** スクリプト プロパティを読む（未設定は ""）。 */
+function scriptProp_(key) {
+  return String(PropertiesService.getScriptProperties().getProperty(key) || "").trim();
+}
+
+/** その種別の base フィールド並び（FIELD_MAP の _ja/_en を base へ集約・重複除去）。 */
+function baseFieldsOf_(type) {
+  var seen = {}, out = [];
+  FIELD_MAP[type].questions.forEach(function (q) {
+    var f = q.field, base = f.replace(/_(ja|en)$/, "");
+    if (BILINGUAL_BASES.indexOf(base) >= 0) f = base;
+    if (!seen[f]) { seen[f] = true; out.push(f); }
+  });
+  return out;
+}
+
+/** LLM 応答（配列）を許可キーのみ・文字列化・空件除外で base-dict 配列へ正規化。 */
+function normalizeLlmRecords_(raw, type) {
+  var allowed = {};
+  baseFieldsOf_(type).forEach(function (f) { allowed[f] = true; });
+  var titleKeys = ["title", "review_title", "book_title"];
+  var out = [];
+  (raw || []).forEach(function (r) {
+    if (!r || typeof r !== "object") return;
+    var rec = {};
+    Object.keys(r).forEach(function (k) {
+      if (allowed[k] && r[k] != null) {
+        var s = String(r[k]).trim();
+        if (s) rec[k] = s;
+      }
+    });
+    var hasTitle = titleKeys.some(function (k) { return rec[k]; });
+    if (hasTitle || rec.authors) out.push(rec);
+  });
+  return out;
+}
+
+/**
+ * 貼り付けテキストを GitHub Models で構造化し、base-dict 配列を返す。
+ * トークン未設定・API/JSON エラー時は throw（呼び出し側で従来解析へフォールバック）。
+ */
+function parseRecordsLlm_(text, type) {
+  var token = scriptProp_(LLM_TOKEN_PROP);
+  if (!token) throw new Error(LLM_TOKEN_PROP + " 未設定");
+  var fields = baseFieldsOf_(type);
+  var prompt =
+    "あなたは研究業績テキストの構造化抽出器です。貼り付けテキストから業績を1件ずつ抽出し、" +
+    '{"records": [ {...}, ... ]} という JSON だけを返してください。\n' +
+    "各レコードのキーは次のみを使う: " + fields.join(", ") + "\n" +
+    "規則:\n- 本文に存在する情報だけを入れる。推測・創作はしない。\n" +
+    '- doi は本文に明記がある時だけ。無ければ ""（絶対に生成・推測しない）。\n' +
+    '- date は "YYYY/M" もしくは "YYYY/M/D"。\n' +
+    "- title・journal・conference 等は原文の言語のまま（翻訳しない）。\n" +
+    '- volume / issue は数字、pages は "開始-終了"。不明な項目は ""。\n\nテキスト:\n' + text;
+
+  var resp = UrlFetchApp.fetch(LLM_BASE_URL + "/chat/completions", {
+    method: "post",
+    contentType: "application/json",
+    headers: {Authorization: "Bearer " + token},
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      model: LLM_MODEL,
+      temperature: 0,
+      response_format: {type: "json_object"},
+      messages: [
+        {role: "system", content: "厳密な JSON のみを出力する構造化抽出器。"},
+        {role: "user", content: prompt}
+      ]
+    })
+  });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error("HTTP " + resp.getResponseCode());
+  }
+  var content = JSON.parse(resp.getContentText()).choices[0].message.content;
+  var data = JSON.parse(content);
+  var recs = (data && data.records) ? data.records : (Array.isArray(data) ? data : null);
+  if (!Array.isArray(recs)) throw new Error("records 配列なし");
+  return normalizeLlmRecords_(recs, type);
+}
+
+/**
+ * 手動実行用の診断: トークンの有無と GitHub Models への接続結果をログに出す。
+ * エディタ上部の関数選択で testLlmToken を選び「実行」→「表示 → ログ」で結果を確認する。
+ *   HTTP 200 = 正常 / 401 = トークン無効・Models権限なし / 404 = モデルID違い / それ以外 = 本文参照
+ */
+function testLlmToken() {
+  var token = scriptProp_(LLM_TOKEN_PROP);
+  Logger.log(LLM_TOKEN_PROP + " の登録: " + (token ? ("あり（" + token.length + " 文字）") : "なし"));
+  if (!token) {
+    Logger.log("→ このプロジェクトの『プロジェクトの設定 → スクリプト プロパティ』に "
+      + LLM_TOKEN_PROP + " を登録してください。");
+    return;
+  }
+  try {
+    var resp = UrlFetchApp.fetch(LLM_BASE_URL + "/chat/completions", {
+      method: "post", contentType: "application/json",
+      headers: {Authorization: "Bearer " + token}, muteHttpExceptions: true,
+      payload: JSON.stringify({
+        model: LLM_MODEL, temperature: 0,
+        messages: [{role: "user", content: "Reply with the single word: ok"}]
+      })
+    });
+    Logger.log("HTTP " + resp.getResponseCode() + " / model=" + LLM_MODEL);
+    Logger.log(String(resp.getContentText()).slice(0, 500));
+  } catch (e) {
+    Logger.log("例外: " + e);
+  }
+}
+
 /** values（新規）の代表タイトル（_ja 優先、無ければ _en、book は book_title）。 */
 function recTitleOf_(v) {
   var keys = ["title_ja", "title_en", "book_title_ja", "book_title_en"];
@@ -505,27 +650,75 @@ function recTitleOf_(v) {
   return "";
 }
 
-/** 既存行を走査し、重複（DOI 一致 or 年月+タイトル一致）する行の record_id を返す。 */
-function findDuplicate_(sheet, header, values) {
+/** 既存行を走査し、重複（DOI / タイトル / 年月+タイトル のいずれか一致）行の record_id を返す。 */
+function findDuplicate_(sheet, header, values, type) {
   var last = sheet.getLastRow();
   if (last < 2) return "";
   var col = {};
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
-  var newDoi = doiKeyOf_(values.doi);
-  var newDt = dtKeyOf_(values.date, recTitleOf_(values));
+  var titleOnly = (type === "paper" || type === "book");
+  var newKeys = {};
+  dupKeysOf_(values.doi, values.date, recTitleOf_(values), titleOnly)
+    .forEach(function (k) { newKeys[k] = true; });
   var data = sheet.getRange(2, 1, last - 1, header.length).getValues();
   for (var r = 0; r < data.length; r++) {
     var row = data[r];
-    function cell(name) { return name in col ? row[col[name]] : ""; }
+    var cell = function (name) { return name in col ? row[col[name]] : ""; };
     var t = String(cell("title_ja") || cell("title_en") ||
                    cell("book_title_ja") || cell("book_title_en") || "").trim();
-    var doi = doiKeyOf_(cell("doi"));
-    var dt = dtKeyOf_(cell("date"), t);
-    if ((newDoi && doi === newDoi) || dt === newDt) {
-      return String(cell("record_id") || "").trim() || "(既存)";
+    var keys = dupKeysOf_(cell("doi"), cell("date"), t, titleOnly);
+    for (var j = 0; j < keys.length; j++) {
+      if (newKeys[keys[j]]) return String(cell("record_id") || "").trim() || "(既存)";
     }
   }
   return "";
+}
+
+/** タイトルを単語トークンへ分解（小文字化・記号→空白・CJK は1トークン）。 */
+function titleTokens_(s) {
+  return String(s || "").toLowerCase()
+    .replace(/[^0-9a-z぀-ヿ㐀-鿿]+/g, " ").trim()
+    .split(/\s+/).filter(function (w) { return w.length; });
+}
+
+/** 2 つのタイトルが十分に一致するか（トークン Jaccard >= 0.6）。誤マッチ防止用。 */
+function titleSimilar_(a, b) {
+  var ta = titleTokens_(a), tb = titleTokens_(b);
+  if (!ta.length || !tb.length) return false;
+  var setB = {}; tb.forEach(function (w) { setB[w] = true; });
+  var inter = 0, seen = {};
+  ta.forEach(function (w) { if (setB[w] && !seen[w]) { inter++; seen[w] = true; } });
+  var uni = {}; ta.concat(tb).forEach(function (w) { uni[w] = true; });
+  var union = Object.keys(uni).length;
+  return union > 0 && (inter / union) >= 0.6;
+}
+
+/**
+ * タイトル（＋著者）で CrossRef を検索し、十分一致する候補の DOI を values.doi に入れる。
+ * 見つけて設定したら true。誤った DOI を入れないよう、タイトル類似度で検証する。
+ */
+function resolveDoiByTitle_(values) {
+  var title = String(values.title_en || values.title_ja || "").trim();
+  if (title.length < 8) return false;  // 短すぎるタイトルは検索精度が低いので見送る
+  var authors = String(values.authors || "").trim();
+  var query = encodeURIComponent(authors ? (title + " " + authors) : title);
+  var url = "https://api.crossref.org/works?rows=5&select=DOI,title&query.bibliographic=" + query;
+  var items;
+  try {
+    var resp = UrlFetchApp.fetch(url, {muteHttpExceptions: true, followRedirects: true});
+    if (resp.getResponseCode() !== 200) return false;
+    items = ((JSON.parse(resp.getContentText()).message) || {}).items || [];
+  } catch (err) {
+    return false;
+  }
+  for (var i = 0; i < items.length; i++) {
+    var ct = (items[i].title && items[i].title.length) ? items[i].title[0] : "";
+    if (titleSimilar_(title, ct)) {
+      var doi = String(items[i].DOI || "").trim();
+      if (doi) { values.doi = doi; return true; }
+    }
+  }
+  return false;
 }
 
 /** CrossRef から論文/著書情報を取得し values の空欄を補完。補完したら true。 */
@@ -564,6 +757,41 @@ function enrichFromDoi_(type, values) {
 function pad2_(n) {
   var s = String(n);
   return s.length < 2 ? "0" + s : s;
+}
+
+/** 書籍: ISBN から OpenLibrary で書名・出版社・出版日の空欄を補完。補完したら true。 */
+function enrichFromIsbn_(values) {
+  var isbn = String(values.isbn || "").replace(/[^0-9Xx]/g, "");
+  if (isbn.length < 10) return false;
+  var book;
+  try {
+    var resp = UrlFetchApp.fetch(
+      "https://openlibrary.org/api/books?bibkeys=ISBN:" + isbn + "&format=json&jscmd=data",
+      {muteHttpExceptions: true, followRedirects: true});
+    if (resp.getResponseCode() !== 200) return false;
+    book = JSON.parse(resp.getContentText())["ISBN:" + isbn];
+  } catch (err) {
+    return false;
+  }
+  if (!book) return false;
+
+  function setIfEmpty(k, v) { if (v && !String(values[k] || "").trim()) values[k] = v; }
+  var title = book.title || "";
+  if (title) setIfEmpty(hasCjk_(title) ? "book_title_ja" : "book_title_en", title);
+  setIfEmpty("publisher", (book.publishers && book.publishers.length) ? book.publishers[0].name : "");
+  setIfEmpty("date", isbnDate_(book.publish_date));
+  return true;
+}
+
+/** "2015" / "March 2015" / "2015-03-01" 等を "YYYY[/M[/D]]" へ正規化（不明は ""）。 */
+function isbnDate_(s) {
+  s = String(s || "");
+  var ym = /(\d{4})[\/\-.](\d{1,2})(?:[\/\-.](\d{1,2}))?/.exec(s);
+  if (ym) return ym[1] + "/" + (+ym[2]) + (ym[3] ? ("/" + (+ym[3])) : "");
+  var en = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{4})/i.exec(s);
+  if (en) return en[2] + "/" + EN_MONTHS[en[1].toLowerCase().slice(0, 3)];
+  var y = /(\d{4})/.exec(s);
+  return y ? y[1] : "";
 }
 
 /** 表示ラベル（日英併記 or 旧・日本語のみ）から内部種別キーを引く。 */

@@ -54,12 +54,14 @@ def _fiscal_year(dt: pd.Timestamp) -> "pd.NA | int":
 
 # 文字列中の最初の日付（yyyy/m[/d] または yyyy-m[-d]）。範囲表記対策。
 _DATE_RE = re.compile(r"\d{4}[/-]\d{1,2}(?:[/-]\d{1,2})?")
+# 和暦表記 "2021年12月[3日]"。
+_JP_DATE_RE = re.compile(r"(\d{4})年\s*(\d{1,2})月(?:\s*(\d{1,2})日)?")
 
 
 def _parse_date(value) -> pd.Timestamp:
     """混在する日付表現を頑健に解析。
 
-    datetime / "2025/4/21" / "2020/03/23" / "yyyy/mm" に加え、
+    datetime / "2025/4/21" / "2020/03/23" / "yyyy/mm" / "2021年12月[3日]" に加え、
     範囲表記（"2025/7/24-2025/7/26" / "2021/4~2023/3"）は先頭の日付を採用する。
     """
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -68,9 +70,13 @@ def _parse_date(value) -> pd.Timestamp:
         value = value.strip()
         if not value:
             return pd.NaT
-        m = _DATE_RE.search(value)
-        if m:
-            value = m.group(0)
+        mj = _JP_DATE_RE.search(value)
+        if mj:
+            value = f"{mj.group(1)}/{mj.group(2)}/{mj.group(3) or '1'}"
+        else:
+            m = _DATE_RE.search(value)
+            if m:
+                value = m.group(0)
     return pd.to_datetime(value, errors="coerce")
 
 

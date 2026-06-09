@@ -136,21 +136,34 @@ def v2_tests() -> None:
     ing = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ing)
 
-    print("[v2] 重複検出（DOI有無の混在・日付表記ゆれを横断）")
+    print("[v2] 重複検出（DOI正規化・月違い・タイトル一致を横断）")
+    check("JP日付パース 2021年12月", str(_parse_date("2021年12月").date()) == "2021-12-01")
+    check("DOI接頭辞除去", ing._clean_doi("doi: 10.1/ABC") == "10.1/abc"
+          and ing._clean_doi("https://doi.org/10.2/x") == "10.2/x")
     ddir = Path(__file__).resolve().parent
     dpath = ddir / "_v2_dup.xlsx"
     try:
+        import pandas as pd2
+        # 論文: DOI有無の混在・月違い(4月/7月)・末尾ピリオド差 でも同一タイトルなら集約。
         a = {"date": "2025/7", "title": "Circular RNA biomarker", "authors": "Miyazaki S"}
         b = {"date": "2025/07/15", "title": "Circular RNA biomarker", "authors": "Miyazaki S",
              "doi": "10.1/abc"}
-        c = dict(a)
+        d = {"date": "2025/4/21", "title": "Circular RNA biomarker.", "authors": "Miyazaki S",
+             "doi": "doi: 10.1/ABC"}
         ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [a]},
                             "paste", "未確認")
-        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [b, c]},
+        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "paper": [b, dict(a), d]},
                             "paste", "未確認", append_to=dpath)
-        import pandas as pd2
         ddf = pd2.read_excel(dpath, sheet_name="Original Papers")
-        check("同一論文は1件に集約（DOI有無・日付ゆれ横断）", len(ddf) == 1, f"rows={len(ddf)}")
+        check("論文: 同一タイトルは1件に集約（月違い・DOIゆれ横断）", len(ddf) == 1, f"rows={len(ddf)}")
+
+        # 発表: 同名講演を別日に行うのは正当 → タイトル一致のみでは集約しない。
+        p1 = {"date": "2024/8", "title": "睡眠の制御機構", "authors": "Miyazaki S"}
+        p2 = {"date": "2023/8", "title": "睡眠の制御機構", "authors": "Miyazaki S"}
+        ing.write_canonical(dpath, {**{rt: [] for rt in ing.CANONICAL_FIELDS}, "presentation": [p1, p2]},
+                            "paste", "未確認", append_to=dpath)
+        pdf = pd2.read_excel(dpath, sheet_name="presentations")
+        check("発表: 同名でも別日なら2件保持", len(pdf) == 2, f"rows={len(pdf)}")
     finally:
         if dpath.exists():
             dpath.unlink()
@@ -247,6 +260,46 @@ def paste_tests() -> None:
     check("Marine等の月名途中一致を誤検出しない", ip._find_date("Marine Biology Society 2021") is None)
 
 
+def llm_parse_tests() -> None:
+    """LLM 構造化抽出（scripts/llm_parse.py）の純関数・フォールバック検証（ネットワーク非依存）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "llm_parse",
+        Path(__file__).resolve().parent.parent / "scripts" / "llm_parse.py")
+    lp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lp)
+
+    print("[llm] _normalize_llm_records（許可キー除去・型整形・空件除外）")
+    raw = [
+        # 許可外キー(foo)は除去、数値→文字列＋strip、date は保持。
+        {"title": "  REM sleep in mice  ", "authors": "Yamada T", "volume": 16,
+         "foo": "x", "date": "2025/7", "doi": ""},
+        # タイトルも著者も無い → 除外。
+        {"journal": "Sci Rep"},
+        # 著者のみ → 採用。
+        {"authors": "Hayashi N"},
+        # dict 以外 → 無視。
+        "not-a-dict",
+    ]
+    recs = lp._normalize_llm_records(raw, "paper")
+    check("空件・非dictを除外して2件", len(recs) == 2, f"n={len(recs)}")
+    check("許可外キー foo を除去", "foo" not in recs[0])
+    check("数値 volume を文字列化", recs[0].get("volume") == "16")
+    check("タイトルを strip", recs[0].get("title") == "REM sleep in mice")
+    check("空文字 doi は脱落", "doi" not in recs[0])
+    check("著者のみの件を採用", recs[1].get("authors") == "Hayashi N")
+
+    print("[llm] llm_enabled / トークン未設定時のフォールバック")
+    check("トークン有→enabled", lp.llm_enabled("ghp_dummy"))
+    check("トークン無→disabled", not lp.llm_enabled(""))
+    raised = False
+    try:
+        lp.parse_records_llm("any text", "paper", token="")
+    except lp.LLMParseError:
+        raised = True
+    check("トークン無で LLMParseError（→従来解析へフォールバック）", raised)
+
+
 def integration_tests(source) -> None:
     print("[integration] loading workbook")
     df = load_publications(source)
@@ -312,6 +365,7 @@ def main() -> None:
     template_header_tests(check)
     v2_tests()
     paste_tests()
+    llm_parse_tests()
     if len(sys.argv) > 1:
         arg = sys.argv[1]
         # ローカルファイルならオフライン検証、それ以外は共有 URL/ID としてライブ取得。

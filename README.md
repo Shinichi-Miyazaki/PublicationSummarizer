@@ -79,6 +79,10 @@ DB は **Canonical 形式**（種別ごとに 1 タブ、1 行目＝安定した
 2. share.streamlit.io でアプリを作成し、`app.py` を指定。
 3. `requirements.txt` が自動でインストールされる。シートは閲覧可のままで OK。
 
+> 一般メンバーに開発者メニューを見せないため `.streamlit/config.toml` で `client.toolbarMode = "viewer"`
+> を設定済み（右上「⋮」の "Clear cache"/"Rerun" や、キー操作でのキャッシュ消去確認ダイアログを無効化）。
+> キャッシュ更新はサイドバーの「🔄 再読み込み」ボタンで行う。
+
 ## 限定公開（パスワード保護）
 外部に広く見せたくない場合は、共有パスワードで保護できる。
 
@@ -102,9 +106,10 @@ publication_summarizer/
   templates.yaml                書式プリセット（科研費ベース、編集可）
 scripts/ingest_to_canonical.py  一括取り込み（旧DB移行 + 構造化リストの追記）
 scripts/make_templates.py       一括入力テンプレート（種別ごとの Excel）を生成
-scripts/ingest_paste.py         researchmap 等のプレーンテキストを解析して取り込み
-scripts/forms/publication_form.gs  Apps Script: 1フォーム生成＋送信を Canonical へ自動取込（英日両入力・DOI補完・重複フラグ）
-scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・DOI補完・重複再チェック）
+scripts/ingest_paste.py         researchmap 等のプレーンテキストを解析して取り込み（--llm で LLM 構造化）
+scripts/llm_parse.py            任意: GitHub Models(OpenAI互換)で貼り付けを構造化抽出（--llm 用・未導入でも基本機能は動作）
+scripts/forms/publication_form.gs  Apps Script: 1フォーム生成＋送信を Canonical へ自動取込（英日両入力・DOI/ISBN補完・タイトル→DOI検索・一括貼り付けの任意LLM構造化・重複フラグ）
+scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・選択行を補完=DOI/タイトル/ISBN・まとめて点検=重複/欠損/色分け→点検レポート・メンバー編集の保護）
 tests/verify.py                 動作検証スクリプト（ユニット＋整合＋統合）
 tests/test_form_fields.py       .gs の設問定義と schema の一致を検証（ドリフト防止）
 tests/fixtures/                 検証用の合成 Canonical サンプル
