@@ -54,6 +54,17 @@ def load_all(url_or_id: str):
     return df, members
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def usable_members(url_or_id: str, threshold: int):
+    """業績に1件以上登場するメンバーのみを返す（rapidfuzz 照合をキャッシュ）。
+
+    リラン毎の再計算を避けるため (url, threshold) でメモ化する。
+    """
+    df, members = load_all(url_or_id)
+    matcher = AuthorMatcher(members, threshold=threshold)
+    return active_members(df, members, matcher)
+
+
 def check_password(lang: str) -> None:
     """限定公開用の簡易パスワードゲート（secrets 未設定なら素通り）。"""
     try:
@@ -115,6 +126,7 @@ def main() -> None:
             # データ取得のキャッシュのみ無効化（全 cache_data を消さない）。
             load_all.clear()
             fetch_bytes.clear()
+            usable_members.clear()
 
     try:
         df, members = load_all(url)
@@ -136,8 +148,7 @@ def main() -> None:
         threshold = st.slider(tr("author_loose_label", lang), 70, 100, 85, help=tr("author_loose_help", lang))
         matcher = AuthorMatcher(members, threshold=threshold)
 
-        usable_members = active_members(df, members, matcher)
-        member_display = {m.display: m for m in usable_members}
+        member_display = {m.display: m for m in usable_members(url, threshold)}
         sel_author_disp = st.multiselect(tr("author_label", lang), list(member_display), help=tr("author_help", lang))
         sel_members = [member_display[d] for d in sel_author_disp]
 

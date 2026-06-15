@@ -8,6 +8,10 @@ from __future__ import annotations
 import pandas as pd
 
 from .roster import AuthorMatcher, Member, split_authors
+from .schema import SHEET_SPECS
+
+# 査読列（peer_reviewed）を持つ種別。査読フィルタはこれらにのみ作用させる。
+_PEER_TYPES = {s.rtype for s in SHEET_SPECS if "peer_reviewed" in s.fields}
 
 
 def active_members(
@@ -69,7 +73,12 @@ def _is_peer_reviewed(value) -> bool:
 
 
 def by_peer_reviewed(df: pd.DataFrame, only_peer_reviewed: bool) -> pd.DataFrame:
-    """査読ありのみに絞り込む。表記ゆれ（査読あり/〇/yes 等）を吸収する。"""
+    """査読ありのみに絞り込む。表記ゆれ（査読あり/〇/yes 等）を吸収する。
+
+    査読列を持つ種別（論文・著書）にのみ作用し、査読の概念が無い種別
+    （発表・受賞・アウトリーチ・広報）は素通しする。
+    """
     if not only_peer_reviewed or "peer_reviewed" not in df.columns:
         return df
-    return df[df["peer_reviewed"].apply(_is_peer_reviewed)]
+    mask = ~df["type"].isin(_PEER_TYPES) | df["peer_reviewed"].apply(_is_peer_reviewed)
+    return df[mask]

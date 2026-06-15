@@ -129,6 +129,7 @@ SHEET_SPECS: list[SheetSpec] = [
         keyword="Publicity",  # "報道パブリシティ　Publicity"
         rtype="publicity",
         fields=expand_bilingual(("date", "media_type", "media_name", "authors", "title", "link")),
+        # authors（掲載人物）は著者フィルタ用。広報の出力テンプレートには出さない。
         people_field="authors",
         title_field="title",
         numeric_fields=(),

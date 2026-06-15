@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import io
 import re
-from typing import Union
 
 import pandas as pd
 import requests
@@ -45,8 +44,8 @@ def load_workbook_bytes(url_or_id: str = DEFAULT_SHEET_ID, timeout: int = 30) ->
     return resp.content
 
 
-def _fiscal_year(dt: pd.Timestamp) -> "pd.NA | int":
-    """年度（4月始まり）を返す。1〜3月は前年度。"""
+def _fiscal_year(dt: pd.Timestamp):
+    """年度（4月始まり）を返す。1〜3月は前年度。日付不明は pd.NA。"""
     if pd.isna(dt):
         return pd.NA
     return dt.year if dt.month >= 4 else dt.year - 1
@@ -156,14 +155,14 @@ def _normalize_sheet(raw: pd.DataFrame, spec: SheetSpec) -> list[dict]:
         rec["date"] = date
         rec["fiscal_year"] = _fiscal_year(date)
         rec["authors_raw"] = rec.get(spec.people_field, "")
-        # 既定の `title` 列（直接参照・状態ゲート用）。主タイトルを言語解決して入れる。
+        # 表示・点検用の統一 `title` 列。主タイトルを言語解決して入れる。
         if not str(rec.get("title", "")).strip():
-            rec["title"] = _pick_lang(rec, spec.title_field) or _pick_lang(rec, "title")
+            rec["title"] = _pick_lang(rec, spec.title_field)
         records.append(rec)
     return records
 
 
-def load_publications(source: Union[str, bytes] = DEFAULT_SHEET_ID) -> pd.DataFrame:
+def load_publications(source: str | bytes = DEFAULT_SHEET_ID) -> pd.DataFrame:
     """業績シートを読み込み、全種別を結合した共通スキーマ DataFrame を返す。
 
     Parameters
@@ -193,7 +192,7 @@ def load_publications(source: Union[str, bytes] = DEFAULT_SHEET_ID) -> pd.DataFr
     return df[ordered + rest]
 
 
-def load_roster_sheet(source: Union[str, bytes] = DEFAULT_SHEET_ID) -> pd.DataFrame:
+def load_roster_sheet(source: str | bytes = DEFAULT_SHEET_ID) -> pd.DataFrame:
     """メンバー名簿シート（Input confirmation）を生のまま返す。
 
     名簿は parse_roster が列インデックス（B列=役職, C列=氏名）で読むため header=None で取得する。

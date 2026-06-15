@@ -192,6 +192,13 @@ def v2_tests() -> None:
     kept = by_peer_reviewed(pr, True)
     check("査読あり/〇 を採用, 査読なし を除外", len(kept) == 2, f"n={len(kept)}")
 
+    # 査読列を持たない種別（発表）は査読フィルタで消えない（素通し）。
+    pr2 = pd.DataFrame({"type": ["paper", "paper", "presentation"],
+                        "peer_reviewed": ["査読あり", "査読なし", None]})
+    kept2 = by_peer_reviewed(pr2, True)
+    check("発表は査読フィルタで素通し", set(kept2["type"]) == {"paper", "presentation"}
+          and len(kept2) == 2, f"types={list(kept2['type'])}")
+
     print("[v2] ingest --from upgrade 往復")
     import importlib.util
     spec = importlib.util.spec_from_file_location(
