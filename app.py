@@ -16,6 +16,7 @@ from publication_summarizer import (
     by_authors,
     by_fiscal_year,
     by_peer_reviewed,
+    by_scope,
     by_types,
     load_publications,
     load_templates,
@@ -160,6 +161,10 @@ def main() -> None:
 
         only_pr = st.checkbox(tr("peer_label", lang), value=False)
 
+        scope_options = {tr("scope_all", lang): "", tr("scope_domestic", lang): "国内", tr("scope_intl", lang): "国際"}
+        scope_choice = st.radio(tr("scope_label", lang), list(scope_options), horizontal=True)
+        scope = scope_options[scope_choice]
+
         st.header(tr("sb_format", lang))
         preset_disp = [preset_label(k, lang) for k in preset_keys]
         default_idx = preset_keys.index("科研費") if "科研費" in preset_keys else 0
@@ -170,6 +175,7 @@ def main() -> None:
     filtered = by_types(df, selected_types)
     filtered = by_fiscal_year(filtered, fy_min, fy_max)
     filtered = by_peer_reviewed(filtered, only_pr)
+    filtered = by_scope(filtered, scope)
     filtered = by_authors(filtered, sel_members, matcher)
 
     caption = tr("count_caption", lang).format(total=len(df), shown=len(filtered))

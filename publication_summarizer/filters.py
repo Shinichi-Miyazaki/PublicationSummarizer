@@ -13,6 +13,9 @@ from .schema import SHEET_SPECS
 # 査読列（peer_reviewed）を持つ種別。査読フィルタはこれらにのみ作用させる。
 _PEER_TYPES = {s.rtype for s in SHEET_SPECS if "peer_reviewed" in s.fields}
 
+# 国内/国際（scope）列を持つ種別。scope フィルタはこれらにのみ作用させる。
+_SCOPE_TYPES = {s.rtype for s in SHEET_SPECS if "scope" in s.fields}
+
 
 def active_members(
     df: pd.DataFrame, members: list[Member], matcher: AuthorMatcher
@@ -70,6 +73,33 @@ _PEER_YES = {"査読あり", "〇", "○", "あり", "有", "yes", "true", "peer
 def _is_peer_reviewed(value) -> bool:
     s = str(value).strip().lower().replace(" ", "")
     return s in {v.lower() for v in _PEER_YES}
+
+
+# scope 値の正規化（フォームの「国内/国際」・英語表記・表記ゆれを2値へ吸収）。
+def _norm_scope(value) -> str:
+    """scope 値を "国内" / "国際" に正規化（判定不能・空は ""）。"""
+    s = str(value).strip().lower().replace(" ", "")
+    if not s or s == "nan":
+        return ""
+    if "国際" in s or "international" in s or "intl" in s:
+        return "国際"
+    if "国内" in s or "domestic" in s:
+        return "国内"
+    return ""
+
+
+def by_scope(df: pd.DataFrame, scope: str | None) -> pd.DataFrame:
+    """国内/国際（scope）で絞り込む。空（すべて）は全件。
+
+    scope 列を持つ種別（発表・受賞・アウトリーチ）にのみ作用し、scope の概念が
+    無い種別（論文・著書・広報）は素通しする。指定種別で scope が空（判定不能）の
+    行は、特定 scope を選んだとき除外される（年度フィルタと同じ扱い）。
+    """
+    target = _norm_scope(scope)
+    if not target or "scope" not in df.columns:
+        return df
+    mask = ~df["type"].isin(_SCOPE_TYPES) | (df["scope"].apply(_norm_scope) == target)
+    return df[mask]
 
 
 def by_peer_reviewed(df: pd.DataFrame, only_peer_reviewed: bool) -> pd.DataFrame:

@@ -53,6 +53,10 @@ STRINGS: dict[str, tuple[str, str]] = {
     ),
     "fy_label": ("年度（4月始まり）", "Fiscal year (Apr–Mar)"),
     "peer_label": ("査読ありのみ（論文）", "Peer-reviewed only (papers)"),
+    "scope_label": ("国内/国際（発表・受賞・アウトリーチ）", "Domestic/Intl (talks, awards, outreach)"),
+    "scope_all": ("すべて", "All"),
+    "scope_domestic": ("国内", "Domestic"),
+    "scope_intl": ("国際", "International"),
     "sb_format": ("書式", "Format"),
     "preset_label": ("提出先（テンプレート）", "Target (template)"),
     "preset_help": (

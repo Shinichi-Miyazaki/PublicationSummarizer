@@ -43,7 +43,7 @@ from publication_summarizer.loader import (  # noqa: E402
     load_roster_sheet,
     load_workbook_bytes,
 )
-from publication_summarizer.filters import by_peer_reviewed  # noqa: E402
+from publication_summarizer.filters import by_peer_reviewed, by_scope  # noqa: E402
 from publication_summarizer.i18n import rt_label, tr  # noqa: E402
 from publication_summarizer.roster import Member, split_authors  # noqa: E402
 from publication_summarizer.schema import BILINGUAL_FIELDS, display_fields  # noqa: E402
@@ -114,6 +114,8 @@ def unit_tests() -> None:
     check("末尾 et al. を除去", split_authors("Smith J, et al.") == ["Smith J"])
     check("末尾 ほかN名 を除去", split_authors("宮崎 慎一, ほか3名") == ["宮崎 慎一"])
     check("and を含む姓を割らない", split_authors("Anderson J, Bond K") == ["Anderson J", "Bond K"])
+    check("発表者の丸印を除去", split_authors("○山田 太郎, 林 直子") == ["山田 太郎", "林 直子"])
+    check("丸印＋空白も除去", split_authors("◯ 山田 太郎, 〇林 直子") == ["山田 太郎", "林 直子"])
 
 
 def author_style_tests() -> None:
@@ -198,6 +200,17 @@ def v2_tests() -> None:
     kept2 = by_peer_reviewed(pr2, True)
     check("発表は査読フィルタで素通し", set(kept2["type"]) == {"paper", "presentation"}
           and len(kept2) == 2, f"types={list(kept2['type'])}")
+
+    print("[v2] 国内/国際フィルタ（by_scope）")
+    sc = pd.DataFrame({"type": ["presentation", "presentation", "presentation", "paper"],
+                       "scope": ["国内", "国際", "International", None]})
+    intl = by_scope(sc, "国際")
+    check("国際を選ぶと国際のみ（論文は素通し, 空scopeの発表は除外）",
+          set(intl["type"]) == {"presentation", "paper"} and len(intl) == 3,
+          f"n={len(intl)} types={list(intl['type'])}")
+    check("すべて（空）は全件", len(by_scope(sc, "")) == 4)
+    dom = by_scope(sc, "国内")
+    check("国内を選ぶと国内のみ＋論文素通し", len(dom) == 2)
 
     print("[v2] ingest --from upgrade 往復")
     import importlib.util
