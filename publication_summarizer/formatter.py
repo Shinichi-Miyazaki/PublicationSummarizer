@@ -59,6 +59,8 @@ class AuthorStyle:
     etal_count: bool = False  # True で「ほかN名」形式（残数を明示。ja 向け）
     keep_highlighted: bool = True  # 強調著者は省略対象外（上限超でも必ず残す）
     emphasis: str = "bold"  # 強調著者の装飾: "bold" | "none"
+    initials: bool = False  # True で名（ファーストネーム）をイニシャルに整形
+    initials_format: str = "last_first"  # "last_first"=「Yamada T」/ "first_last"=「T. Yamada」
 
 
 _ELLIPSIS = "…"  # 中間省略（強調著者を残した際の欠落箇所）を表す記号
@@ -73,6 +75,8 @@ def author_style_from_template(t: dict) -> AuthorStyle:
         etal_count=bool(t.get("author_etal_count", False)),
         keep_highlighted=bool(t.get("author_keep_highlighted", True)),
         emphasis=str(t.get("author_emphasis", "bold") or "bold"),
+        initials=bool(t.get("author_initials", False)),
+        initials_format=str(t.get("author_initials_format", "last_first") or "last_first"),
     )
 
 
@@ -90,14 +94,17 @@ def render_authors(
     lang: str = "ja",
     highlight: Callable[[str], bool] | None = None,
     markdown: bool = False,
+    name_resolver: Callable[[str], str | None] | None = None,
 ) -> str:
-    """著者文字列を整形（人数省略・自己強調・言語別省略語に対応）。
+    """著者文字列を整形（人数省略・自己強調・言語別省略語・イニシャル化に対応）。
 
     - 上限超のときは先頭から `max_authors` 名を表示。`keep_highlighted` の場合、
       範囲外でも強調著者は必ず残す（順序保持）。
     - 表示著者間に欠落があれば中略記号 `…`、最後の表示著者の後ろに著者が残る場合のみ
       末尾に省略語（et al. / ほか）。→ 強調著者が末尾なら省略語は付かない。
     - `markdown` かつ emphasis="bold" のとき、強調著者を **太字** にする。
+    - `style.initials` かつ `name_resolver` があるとき、各著者を整形後の表記
+      （姓＋名イニシャル等）へ置換する。解決できない著者は元の表記のまま。
     """
     tokens = split_authors(authors_raw)
     if not tokens:
@@ -113,10 +120,19 @@ def render_authors(
     else:
         shown_idx = list(range(n))
 
-    def render_tok(i: int) -> str:
-        if markdown and style.emphasis == "bold" and is_hl[i]:
-            return f"**{tokens[i]}**"
+    def display_tok(i: int) -> str:
+        # イニシャル整形は元トークンで照合し、解決できた場合のみ置換する。
+        if style.initials and name_resolver:
+            resolved = name_resolver(tokens[i])
+            if resolved:
+                return resolved
         return tokens[i]
+
+    def render_tok(i: int) -> str:
+        tok = display_tok(i)
+        if markdown and style.emphasis == "bold" and is_hl[i]:
+            return f"**{tok}**"
+        return tok
 
     parts: list[str] = []
     prev: int | None = None
@@ -179,6 +195,28 @@ class _SafeDict(dict):
         return ""
 
 
+# タイトルを囲う括弧・引用符の対応（開き→閉じ）。入力者が付けがちな装飾を外す。
+_TITLE_WRAP_PAIRS = {
+    "「": "」", "『": "』", "【": "】", "《": "》", "〈": "〉", "〔": "〕",
+    "（": "）", "(": ")", "［": "］", "[": "]", "{": "}", "｛": "｝",
+    "“": "”", "‘": "’", '"': '"', "'": "'", "＂": "＂",
+}
+# 括弧外しの対象とするタイトル系フィールド（base 名）。
+_TITLE_BASES = ("title", "book_title", "review_title")
+
+
+def strip_title_wrap(text: str) -> str:
+    """タイトル全体を囲う括弧・引用符を除去する（左右が対応するペアのときだけ）。
+
+    入力者が付けた「」/『』/“”/() 等の外側装飾を外す。途中の括弧（例:
+    "TNF-α (review)"）は左右が対応しないため触らない。入れ子は繰り返し外す。
+    """
+    s = text.strip()
+    while len(s) >= 2 and s[0] in _TITLE_WRAP_PAIRS and s[-1] == _TITLE_WRAP_PAIRS[s[0]]:
+        s = s[1:-1].strip()
+    return s
+
+
 def _resolve_lang(fields: dict, lang: str) -> None:
     """二ヶ国語 base を表示言語へ解決して fields[base] に入れる。
 
@@ -201,6 +239,7 @@ def _build_fields(
     italic: set[str],
     lang: str = "ja",
     highlight: Callable[[str], bool] | None = None,
+    name_resolver: Callable[[str], str | None] | None = None,
 ) -> dict:
     fields = {}
     for k, v in rec.items():
@@ -214,6 +253,9 @@ def _build_fields(
         if isinstance(v, float):
             fields[k] = clean_number(v)
     _resolve_lang(fields, lang)  # {title} 等の base を表示言語へ
+    for tf in _TITLE_BASES:  # タイトルを囲う括弧・引用符を外す
+        if isinstance(fields.get(tf), str):
+            fields[tf] = strip_title_wrap(fields[tf])
     fields["year"] = _year(rec.get("date"))
     fields["date"] = (
         rec["date"].strftime("%Y/%m/%d")
@@ -221,7 +263,9 @@ def _build_fields(
         else ""
     )
     authors_raw = rec.get("authors_raw", "")
-    fields["authors"] = render_authors(authors_raw, style, lang, highlight, markdown)
+    fields["authors"] = render_authors(
+        authors_raw, style, lang, highlight, markdown, name_resolver
+    )
     # 二重太字回避: 著者強調(bold)が実際に効くなら {authors} のフィールド単位 bold は外す
     # （内側 **member** と外側 **…** の入れ子破綻を防ぐ。italic は両立するため許可）。
     if markdown and style.emphasis == "bold" and has_highlighted_author(authors_raw, highlight):
@@ -243,8 +287,11 @@ def render_one(
     italic: set[str],
     lang: str = "ja",
     highlight: Callable[[str], bool] | None = None,
+    name_resolver: Callable[[str], str | None] | None = None,
 ) -> str:
-    fields = _build_fields(rec, spec_numeric, style, markdown, bold, italic, lang, highlight)
+    fields = _build_fields(
+        rec, spec_numeric, style, markdown, bold, italic, lang, highlight, name_resolver
+    )
     raw = pattern.format_map(_SafeDict(fields))
     return _cleanup(raw)
 
@@ -262,10 +309,12 @@ def render_records(
     italic_fields: set[str] | None = None,
     lang: str = "ja",
     highlight: Callable[[str], bool] | None = None,
+    name_resolver: Callable[[str], str | None] | None = None,
 ) -> dict:
     """1種別の業績群を template に従って整形し、markdown と plain を返す。
 
     highlight: 著者トークン -> 強調対象か を返す述語（選択メンバー判定。app 側が生成）。
+    name_resolver: 著者トークン -> イニシャル整形後の表記（or None）。app 側が名簿から生成。
 
     Returns
     -------
@@ -291,8 +340,8 @@ def render_records(
         for i, (_, rec) in enumerate(records.iterrows(), start=1):
             prefix = f"{i}. " if numbering else ""
             d = rec.to_dict()
-            md = render_one(d, pattern, numeric_fields, style, True, bold, italic, lang, highlight)
-            tx = render_one(d, pattern, numeric_fields, style, False, set(), set(), lang, highlight)
+            md = render_one(d, pattern, numeric_fields, style, True, bold, italic, lang, highlight, name_resolver)
+            tx = render_one(d, pattern, numeric_fields, style, False, set(), set(), lang, highlight, name_resolver)
             md_lines.append(f"{prefix}{md}")
             txt_lines.append(f"{prefix}{tx}")
 

@@ -21,6 +21,8 @@
 #   author_etal_count       : true で「ほかN名」と残数を表示（日本語向け）
 #   author_keep_highlighted : true で選択著者を省略せず必ず表示（既定 true）
 #   author_emphasis         : "bold"（選択著者を太字）| "none"（既定 bold）
+#   author_initials         : true で名（ファーストネーム）をイニシャル化（名簿照合した著者のみ）
+#   author_initials_format  : "last_first"（Yamada T・既定）| "first_last"（T. Yamada）
 
 paper:
   科研費:

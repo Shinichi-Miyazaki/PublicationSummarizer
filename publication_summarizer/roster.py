@@ -154,6 +154,16 @@ class AuthorMatcher:
         score = max(fuzz.token_sort_ratio(norm, a) for a in member.aliases)
         return score >= self.threshold
 
+    def resolve_member(self, author_token: str) -> Member | None:
+        """著者トークンに対応する名簿メンバーを返す（無ければ None）。
+
+        イニシャル整形（姓＋名イニシャル）に使う。最初に一致したメンバーを採る。
+        """
+        for m in self.members:
+            if self.matches_member(author_token, m):
+                return m
+        return None
+
     def record_has_member(self, authors_raw: str, member: Member) -> bool:
         tokens = split_authors(authors_raw)
         return any(self.matches_member(t, member) for t in tokens)
