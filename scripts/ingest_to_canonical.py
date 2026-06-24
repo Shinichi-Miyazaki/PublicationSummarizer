@@ -403,7 +403,17 @@ def _read_existing(path: Path) -> dict[str, list[dict]]:
 
 
 def _next_seq(existing: list[dict]) -> int:
-    return len(existing) + 1
+    """既存 record_id の最大連番 +1 を返す（行数ベースを廃し、削除後も衝突しない）。
+
+    旧実装 ``len(existing) + 1`` は途中行が削除され欠番があると既存 ID と衝突した
+    （例: PAP-0001, PAP-0003 が残る状態で len=2 → PAP-0003 を再採番）。
+    """
+    mx = 0
+    for r in existing:
+        m = re.search(r"-(\d+)$", str(r.get("record_id", "")))
+        if m:
+            mx = max(mx, int(m.group(1)))
+    return mx + 1
 
 
 def write_canonical(out: Path, by_type: dict[str, list[dict]], source_label: str,

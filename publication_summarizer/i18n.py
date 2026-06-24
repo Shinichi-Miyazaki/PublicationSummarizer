@@ -30,7 +30,7 @@ STRINGS: dict[str, tuple[str, str]] = {
         "「リンクを知っている全員が閲覧可」に設定してください。",
         "Set the sheet to 'Anyone with the link can view'.",
     ),
-    "reload_btn": ("🔄 再読み込み（キャッシュ更新）", "🔄 Reload (refresh cache)"),
+    "reload_btn": ("再読み込み（キャッシュ更新）", "Reload (refresh cache)"),
     "load_error": (
         "読み込みに失敗しました: {exc}\n\nシートの共有設定（閲覧可）と URL を確認してください。",
         "Failed to load: {exc}\n\nCheck the sheet's sharing setting (view access) and the URL.",
@@ -57,6 +57,10 @@ STRINGS: dict[str, tuple[str, str]] = {
     "scope_all": ("すべて", "All"),
     "scope_domestic": ("国内", "Domestic"),
     "scope_intl": ("国際", "International"),
+    "invited_label": ("招待の有無（発表）", "Invited (talks)"),
+    "invited_all": ("すべて", "All"),
+    "invited_yes": ("招待あり", "Invited"),
+    "invited_no": ("招待なし", "Not invited"),
     "sb_format": ("書式", "Format"),
     "preset_label": ("提出先（テンプレート）", "Target (template)"),
     "preset_help": (
@@ -66,7 +70,7 @@ STRINGS: dict[str, tuple[str, str]] = {
     "count_caption": ("全 {total} 件中 {shown} 件を表示", "Showing {shown} of {total}"),
     "count_author_suffix": ("／著者: {names}", " / Authors: {names}"),
     "subheader": ("{label}（{n} 件）", "{label} ({n})"),
-    "expander_format": ("✏️ 書式を調整する（任意）", "✏️ Adjust format (optional)"),
+    "expander_format": ("書式を調整する（任意）", "Adjust format (optional)"),
     "legend_intro": (
         "下の枠の **`{ }` で囲まれた語**が、その業績の内容に置き換わります。\n"
         "- 不要な項目は消してOK／順番も自由に変えられます。\n"
@@ -84,7 +88,7 @@ STRINGS: dict[str, tuple[str, str]] = {
     ),
     "style_bold": ("太字にする項目", "Bold items"),
     "style_italic": ("斜体にする項目", "Italic items"),
-    "author_section": ("👥 著者の表示", "👥 Author display"),
+    "author_section": ("著者の表示", "Author display"),
     "author_max_label": ("表示する著者数（0＝全員）", "Authors to show (0 = all)"),
     "author_max_help": (
         "上限を超える著者は省略語でまとめます。0 なら全員を表示します。",
@@ -116,8 +120,8 @@ STRINGS: dict[str, tuple[str, str]] = {
     "author_initials_fmt_last": ("姓 名イニシャル（例: Yamada T）", "Surname + initial (e.g., Yamada T)"),
     "author_initials_fmt_first": ("名イニシャル. 姓（例: T. Yamada）", "Initial. + surname (e.g., T. Yamada)"),
     "copy_hint": (
-        "👇 ドラッグで選択してコピーすると、太字・斜体も保持されます。",
-        "👇 Select and copy the text below to keep bold/italic formatting.",
+        "ドラッグで選択してコピーすると、太字・斜体も保持されます。",
+        "Select and copy the text below to keep bold/italic formatting.",
     ),
     "plain_expander": (
         "コピー用プレーンテキスト（書式なし）",
@@ -127,7 +131,7 @@ STRINGS: dict[str, tuple[str, str]] = {
         "条件に合う業績がありません。絞り込みを見直してください。",
         "No publications match. Try adjusting the filters.",
     ),
-    "copy_all_header": ("📋 すべてまとめてコピー", "📋 Copy everything at once"),
+    "copy_all_header": ("すべてまとめてコピー", "Copy everything at once"),
     "copy_all_hint": (
         "選択中の全種別を1つにまとめました。下のリッチ表示をドラッグコピーすると書式も保持されます。",
         "All selected types combined into one. Drag-copy the rich text below to keep formatting.",

@@ -35,6 +35,7 @@ function onOpen() {
     .addSeparator()
     .addItem("★ まとめて点検（重複・欠損・色分け → レポート）", "runAllChecks")
     .addItem("選択行を補完（DOI・タイトル・ISBN 自動）", "enrichSelected")
+    .addItem("選択行を「重複ではない」に確定", "markNotDuplicate")
     .addSeparator()
     .addItem("メンバー編集を有効化（保護＋編集で未確認へ）", "setupMemberEditing")
     .addToUi();
@@ -193,14 +194,28 @@ function parseLooseDate_(s) {
   return y ? y[1] : "";
 }
 
-/** 1 タブの重複を再チェックし note=dup_of を付ける。flagged 件数を返す（note 列なしは -1）。 */
+/** note 内の not_dup=<ID> で「重複ではない」と確定済みの相手 ID 集合を返す。 */
+function clearedDupIds_(note) {
+  var out = {};
+  String(note || "").split(/;\s*/).forEach(function (p) {
+    var m = /^not_dup=(.+)$/.exec(p.trim());
+    if (m) out[m[1].trim()] = true;
+  });
+  return out;
+}
+
+/**
+ * 1 タブの重複を再判定し note の dup_of= を更新する。flagged 件数を返す（note 列なしは -1）。
+ * 毎回 dup_of を計算し直す（古い dup_of は消して付け直す）ので、相手行が削除されれば自動で外れる。
+ * not_dup=<ID>（「重複ではない」確定）が付いた相手とのペアは再フラグしない。
+ */
 function recheckSheet_(sh) {
   var last = sh.getLastRow();
   var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   var col = {};
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
   if (col.note == null) return -1;
-  if (last < 3) return 0;
+  if (last < 2) return 0;
   var titleOnly = (TAB_TYPE[sh.getName()] === "paper" || TAB_TYPE[sh.getName()] === "book");
   var data = sh.getRange(2, 1, last - 1, header.length).getValues();
   var seen = {}, flagged = 0;  // key -> 既存の record_id
@@ -209,21 +224,58 @@ function recheckSheet_(sh) {
     var c = function (name) { return name in col ? row[col[name]] : ""; };
     var t = String(c("title_ja") || c("title_en") || c("book_title_ja") || c("book_title_en") || "").trim();
     var keys = dupKeysOf_(c("doi"), c("date"), t, titleOnly);
+    var note = String(row[col.note] || "");
+    var cleared = clearedDupIds_(note);
+    // この行とキーが一致する「未確定（not_dup されていない）」先頭の既存行を探す。
     var first = "";
-    for (var j = 0; j < keys.length; j++) { if (seen[keys[j]]) { first = seen[keys[j]]; break; } }
+    for (var j = 0; j < keys.length; j++) {
+      var hit = seen[keys[j]];
+      if (hit && !cleared[hit]) { first = hit; break; }
+    }
+    var newNote = setNoteTag_(note, "dup_of", first);  // first が "" なら dup_of を除去
+    if (newNote !== note) sh.getRange(r + 2, col.note + 1).setValue(newNote);
     if (first) {
-      var note = String(row[col.note] || "");
-      var tag = "dup_of=" + first;
-      if (note.indexOf(tag) < 0) {
-        sh.getRange(r + 2, col.note + 1).setValue(note ? note + "; " + tag : tag);
-        flagged++;
-      }
+      flagged++;
     } else {
       var rid = String(c("record_id") || "").trim() || ("行" + (r + 2));
       keys.forEach(function (k) { if (!seen[k]) seen[k] = rid; });
     }
   }
   return flagged;
+}
+
+/**
+ * 選択行を「重複ではない」と確定する。各行の dup_of=<ID> を not_dup=<ID> へ置き換え、
+ * 以後の点検でその相手とのペアを再フラグしないようにする（他のメモ・タグは保持）。
+ */
+function markNotDuplicate() {
+  var sh = SpreadsheetApp.getActiveSheet();
+  var col = headerCol_(sh, "note");
+  if (col < 0) { toast_("このタブに note 列がありません"); return; }
+  var n = 0, skipped = 0;
+  eachSelectedDataRow_(sh, function (r) {
+    var cell = sh.getRange(r, col + 1);
+    var note = String(cell.getValue() || "");
+    var targets = [];
+    var kept = [];
+    note.split(/;\s*/).forEach(function (p) {
+      p = p.trim();
+      if (!p) return;
+      var m = /^dup_of=(.+)$/.exec(p);
+      if (m) targets.push(m[1].trim());
+      else kept.push(p);
+    });
+    if (!targets.length) { skipped++; return; }
+    targets.forEach(function (t) {
+      var tag = "not_dup=" + t;
+      if (kept.indexOf(tag) < 0) kept.push(tag);
+    });
+    cell.setValue(kept.join("; "));
+    n++;
+  });
+  var msg = n + " 行を「重複ではない」に確定しました";
+  if (skipped) msg += "（重複フラグの無い " + skipped + " 行はスキップ）";
+  toast_(msg);
 }
 
 /** 行の代表タイトル（title_ja/en・book_title_ja/en の順で最初に埋まっているもの）。 */
@@ -319,7 +371,7 @@ var REPORT_SHEET = "点検レポート";
 function runAllChecks() {
   var ss = SpreadsheetApp.getActive();
   var report = [];  // [タブ, record_id, 種類, 詳細, タイトル]
-  var dupTotal = 0, missTotal = 0, noNote = 0;
+  var dupTotal = 0, missTotal = 0, idDupTotal = 0, noNote = 0;
   Object.keys(TAB_TYPE).forEach(function (name) {
     var sh = ss.getSheetByName(name);
     if (!sh) return;
@@ -333,11 +385,15 @@ function runAllChecks() {
     var col = {};
     for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
     var data = sh.getRange(2, 1, last - 1, header.length).getValues();
-    // record_id → タイトル（重複の一致先タイトルを併記するため）。
+    // record_id → タイトル（重複の一致先タイトルを併記するため）／出現回数（ID 重複検出用）。
     var titleById = {};
+    var idCounts = {};
     data.forEach(function (row) {
       var rid = String(row[col.record_id] || "").trim();
-      if (rid) titleById[rid] = rowTitle_(row, col);
+      if (rid) {
+        titleById[rid] = rowTitle_(row, col);
+        idCounts[rid] = (idCounts[rid] || 0) + 1;
+      }
     });
     var typeLabel = TYPE_LABELS[TAB_TYPE[name]] || name;
     data.forEach(function (row) {
@@ -345,6 +401,11 @@ function runAllChecks() {
       if (!rid) return;
       var note = String(col.note != null ? row[col.note] : "");
       var title = rowTitle_(row, col);
+      if (idCounts[rid] > 1) {
+        report.push([typeLabel, rid, "ID重複",
+          "record_id が " + idCounts[rid] + " 行で重複（採番の衝突）。一意の ID へ振り直してください", title]);
+        idDupTotal++;
+      }
       var dm = /dup_of=([^;]+)/.exec(note);
       if (dm) {
         var tgt = dm[1].trim();
@@ -361,7 +422,7 @@ function runAllChecks() {
   });
 
   writeCheckReport_(ss, report);
-  var msg = "点検完了：重複 " + dupTotal + " 件・欠損 " + missTotal + " 件。"
+  var msg = "点検完了：重複 " + dupTotal + " 件・欠損 " + missTotal + " 件・ID重複 " + idDupTotal + " 件。"
     + "『" + REPORT_SHEET + "』シートに一覧を出しました（色分けも更新）。";
   if (noNote) msg += "／note 列なし " + noNote + " タブはスキップ（v2 化が必要）";
   toast_(msg);

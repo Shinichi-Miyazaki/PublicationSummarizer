@@ -16,6 +16,9 @@ _PEER_TYPES = {s.rtype for s in SHEET_SPECS if "peer_reviewed" in s.fields}
 # 国内/国際（scope）列を持つ種別。scope フィルタはこれらにのみ作用させる。
 _SCOPE_TYPES = {s.rtype for s in SHEET_SPECS if "scope" in s.fields}
 
+# 招待（invited）列を持つ種別。招待フィルタはこれらにのみ作用させる（＝発表）。
+_INVITED_TYPES = {s.rtype for s in SHEET_SPECS if "invited" in s.fields}
+
 
 def active_members(
     df: pd.DataFrame, members: list[Member], matcher: AuthorMatcher
@@ -99,6 +102,34 @@ def by_scope(df: pd.DataFrame, scope: str | None) -> pd.DataFrame:
     if not target or "scope" not in df.columns:
         return df
     mask = ~df["type"].isin(_SCOPE_TYPES) | (df["scope"].apply(_norm_scope) == target)
+    return df[mask]
+
+
+# invited 値の正規化（フォームの「招待あり/なし」・旧表記・英語表記を2値へ吸収）。
+def _norm_invited(value) -> str:
+    """invited 値を "招待あり" / "招待なし" に正規化（判定不能・空は ""）。"""
+    s = str(value).strip().lower().replace(" ", "")
+    if not s or s == "nan":
+        return ""
+    if "なし" in s or "×" in s or "✕" in s or "notinvited" in s or s in {"no", "false", "0"}:
+        return "招待なし"
+    if "招待" in s or "あり" in s or "有" in s or "〇" in s or "○" in s or "invited" in s \
+            or s in {"yes", "true", "1"}:
+        return "招待あり"
+    return ""
+
+
+def by_invited(df: pd.DataFrame, target: str | None) -> pd.DataFrame:
+    """招待の有無（invited）で絞り込む。空（すべて）は全件。
+
+    invited 列を持つ種別（発表）にのみ作用し、概念が無い種別は素通しする。
+    発表で invited が空（判定不能）の行は、特定の値を選んだとき除外される
+    （年度・scope フィルタと同じ扱い）。
+    """
+    norm = _norm_invited(target)
+    if not norm or "invited" not in df.columns:
+        return df
+    mask = ~df["type"].isin(_INVITED_TYPES) | (df["invited"].apply(_norm_invited) == norm)
     return df[mask]
 
 

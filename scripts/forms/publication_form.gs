@@ -181,7 +181,9 @@ function buildForm() {
     "各設問に記入例があります。タイトル・雑誌名などは日本語/英語の両方を入力できます（分かる方だけでも可）。\n" +
     "Each question shows an example. Titles/journals accept both Japanese and English (either is fine)."
   );
-  form.setCollectEmail(true);
+  // 回答者の Google ログイン済みメールを自動収集（手入力不要・既入力）。
+  // VERIFIED は署名済みアカウントのアドレスを自動で入れる（回答者は入力不要）。
+  form.setEmailCollectionType(FormApp.EmailCollectionType.VERIFIED);
 
   // 先頭: 全種別共通の設問。
   var reporterItem = form.addTextItem()
@@ -408,7 +410,7 @@ function appendOne_(ss, type, values, reporter, source) {
   if (dupOf) notes.push("dup_of=" + dupOf);
 
   var meta = {
-    record_id: spec.prefix + "-" + pad4_(sheet.getLastRow()),
+    record_id: nextRecordId_(sheet, header, spec.prefix),
     status: APP_STATUS_NEW,
     submitter: reporter,
     source: source,
@@ -816,6 +818,32 @@ function pad4_(n) {
   var s = String(n);
   while (s.length < 4) s = "0" + s;
   return s;
+}
+
+/**
+ * 次の record_id を「prefix の既存最大連番 +1」で採番する。
+ * 旧実装は行数（getLastRow）ベースで、途中行を削除して行数が減ると
+ * 既存 ID と衝突した。最大番号 +1 なら番号は前進し続け、削除があっても重複しない
+ * （欠番は無害）。
+ */
+function nextRecordId_(sheet, header, prefix) {
+  var idCol = -1;
+  for (var i = 0; i < header.length; i++) {
+    if (String(header[i]).trim() === "record_id") { idCol = i; break; }
+  }
+  var max = 0;
+  if (idCol >= 0) {
+    var last = sheet.getLastRow();
+    if (last >= 2) {
+      var ids = sheet.getRange(2, idCol + 1, last - 1, 1).getValues();
+      var re = new RegExp("^" + prefix + "-(\\d+)$");
+      for (var r = 0; r < ids.length; r++) {
+        var m = re.exec(String(ids[r][0]).trim());
+        if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+      }
+    }
+  }
+  return prefix + "-" + pad4_(max + 1);
 }
 
 function nowStamp_() {

@@ -15,6 +15,7 @@ from publication_summarizer import (
     RECORD_TYPES,
     by_authors,
     by_fiscal_year,
+    by_invited,
     by_peer_reviewed,
     by_scope,
     by_types,
@@ -189,6 +190,16 @@ def main() -> None:
         scope_choice = st.radio(tr("scope_label", lang), list(scope_options), horizontal=True)
         scope = scope_options[scope_choice]
 
+        # 招待フィルタは「発表」を選んでいるときだけ出す（常時表示は不要）。
+        invited = ""
+        if "presentation" in selected_types:
+            invited_options = {
+                tr("invited_all", lang): "", tr("invited_yes", lang): "招待あり",
+                tr("invited_no", lang): "招待なし",
+            }
+            invited_choice = st.radio(tr("invited_label", lang), list(invited_options), horizontal=True)
+            invited = invited_options[invited_choice]
+
         st.header(tr("sb_format", lang))
         preset_disp = [preset_label(k, lang) for k in preset_keys]
         default_idx = preset_keys.index("科研費") if "科研費" in preset_keys else 0
@@ -200,6 +211,7 @@ def main() -> None:
     filtered = by_fiscal_year(filtered, fy_min, fy_max)
     filtered = by_peer_reviewed(filtered, only_pr)
     filtered = by_scope(filtered, scope)
+    filtered = by_invited(filtered, invited)
     filtered = by_authors(filtered, sel_members, matcher)
 
     caption = tr("count_caption", lang).format(total=len(df), shown=len(filtered))

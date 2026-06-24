@@ -11,6 +11,7 @@ Google Spreadsheet（複数シートに分かれた研究業績）から、**著
 - **年度フィルタ**：4 月始まりの年度で範囲指定。
 - **査読フィルタ**：「査読ありのみ」は査読の概念がある**論文・著書のみ**に作用し、発表・受賞・アウトリーチ・広報は素通し（消えない）。
 - **国内/国際フィルタ**：「すべて／国内／国際」で絞り込み。`scope` を持つ**発表・受賞・アウトリーチのみ**に作用し、論文・著書・広報は素通し。
+- **招待フィルタ**：「すべて／招待あり／招待なし」で絞り込み。`invited` を持つ**発表のみ**に作用。発表種別を選んでいるときだけサイドバーに表示される。
 - **発表者の丸印を除去**：発表者（登壇者）を示す氏名先頭の丸印（○◯〇●◎）は表示・著者照合の両方で自動的に取り除く。
 - **日英切り替え**：サイドバー上部の「言語 / Language」でUI全体を日本語⇄英語に切替。
 - **英日両方入力（データ）**：タイトル・雑誌名・学会名等は `_ja`/`_en` の2列で持ち、表示言語で自動選択（片方のみなら有る方）。旧・単一列DBも後方互換で表示可。
@@ -109,7 +110,7 @@ publication_summarizer/
   schema.py                     シート→論理フィールド定義 & 種別定義（名前ベース）
   loader.py                     xlsx 取得 → ヘッダ名で共通スキーマへ正規化（status=確認済のみ）
   roster.py                     名簿パース & 著者名寄せ（決定的 + rapidfuzz）
-  filters.py                    著者 / 年度 / 種別 / 査読 / 国内・国際の絞り込み
+  filters.py                    著者 / 年度 / 種別 / 査読 / 国内・国際 / 招待の絞り込み
   formatter.py                  テンプレート整形（数値整形・著者強調・空欄圧縮）
   templates.yaml                書式プリセット（科研費ベース、編集可）
 scripts/ingest_to_canonical.py  一括取り込み（旧DB移行 + 構造化リストの追記）
@@ -117,11 +118,13 @@ scripts/make_templates.py       一括入力テンプレート（種別ごとの
 scripts/ingest_paste.py         researchmap 等のプレーンテキストを解析して取り込み（--llm で LLM 構造化）
 scripts/llm_parse.py            任意: GitHub Models(OpenAI互換)で貼り付けを構造化抽出（--llm 用・未導入でも基本機能は動作）
 scripts/forms/publication_form.gs  Apps Script: 1フォーム生成＋送信を Canonical へ自動取込（英日両入力・DOI/ISBN補完・タイトル→DOI検索・一括貼り付けの任意LLM構造化・重複フラグ）
-scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・選択行を補完=DOI/タイトル/ISBN・まとめて点検=重複/欠損/色分け→点検レポート・メンバー編集の保護）
+scripts/forms/canonical_tools.gs   Apps Script: キュレーター・メニュー（一括承認・選択行を補完=DOI/タイトル/ISBN・重複ではないと確定=not_dup・まとめて点検=重複/欠損/ID重複/色分け→点検レポート・メンバー編集の保護）
 tests/verify.py                 動作検証スクリプト（ユニット＋整合＋統合）
 tests/test_form_fields.py       .gs の設問定義と schema の一致を検証（ドリフト防止）
 tests/fixtures/                 検証用の合成 Canonical サンプル
 docs/google-forms.md            Google フォーム（1本・自動取込）作成手順
+docs/migration-guide.md         旧DB → 新DB（Canonical）移行の手順書
+docs/admin-guide.md             管理者（キュレーター）運用マニュアル（初心者向け・図解）
 ```
 
 ## テンプレートのカスタマイズ

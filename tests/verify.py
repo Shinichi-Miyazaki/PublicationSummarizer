@@ -44,7 +44,7 @@ from publication_summarizer.loader import (  # noqa: E402
     load_roster_sheet,
     load_workbook_bytes,
 )
-from publication_summarizer.filters import by_peer_reviewed, by_scope  # noqa: E402
+from publication_summarizer.filters import by_peer_reviewed, by_scope, by_invited  # noqa: E402
 from publication_summarizer.i18n import rt_label, tr  # noqa: E402
 from publication_summarizer.roster import Member, split_authors  # noqa: E402
 from publication_summarizer.schema import BILINGUAL_FIELDS, display_fields  # noqa: E402
@@ -240,6 +240,19 @@ def v2_tests() -> None:
     check("すべて（空）は全件", len(by_scope(sc, "")) == 4)
     dom = by_scope(sc, "国内")
     check("国内を選ぶと国内のみ＋論文素通し", len(dom) == 2)
+
+    print("[v2] 招待フィルタ（by_invited）")
+    inv = pd.DataFrame({"type": ["presentation", "presentation", "presentation", "paper"],
+                        "invited": ["招待あり", "招待なし", None, None]})
+    yes = by_invited(inv, "招待あり")
+    check("招待ありを選ぶと招待ありのみ（論文は素通し, 空invitedの発表は除外）",
+          set(yes["type"]) == {"presentation", "paper"} and len(yes) == 2,
+          f"n={len(yes)} types={list(yes['type'])}")
+    check("すべて（空）は全件", len(by_invited(inv, "")) == 4)
+    check("招待なしを選ぶと招待なしのみ＋論文素通し", len(by_invited(inv, "招待なし")) == 2)
+    # invited 列を持たない種別（論文のみ）は招待フィルタで消えない（素通し）。
+    inv2 = pd.DataFrame({"type": ["paper", "paper"], "invited": [None, None]})
+    check("invited列があっても発表以外は素通し", len(by_invited(inv2, "招待あり")) == 2)
 
     print("[v2] ingest --from upgrade 往復")
     import importlib.util
