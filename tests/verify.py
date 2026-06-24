@@ -34,6 +34,7 @@ from publication_summarizer.formatter import (  # noqa: E402
     clean_number,
     render_authors,
     render_one,
+    strip_title_wrap,
     _cleanup,
 )
 from publication_summarizer.loader import (  # noqa: E402
@@ -43,7 +44,7 @@ from publication_summarizer.loader import (  # noqa: E402
     load_roster_sheet,
     load_workbook_bytes,
 )
-from publication_summarizer.filters import by_peer_reviewed  # noqa: E402
+from publication_summarizer.filters import by_peer_reviewed, by_scope  # noqa: E402
 from publication_summarizer.i18n import rt_label, tr  # noqa: E402
 from publication_summarizer.roster import Member, split_authors  # noqa: E402
 from publication_summarizer.schema import BILINGUAL_FIELDS, display_fields  # noqa: E402
@@ -107,6 +108,11 @@ def unit_tests() -> None:
         not m.record_has_any("Okamura H, Yasugaki S, Hayashi Y", members),
     )
 
+    print("[unit] resolve_member（イニシャル整形用の名簿照合）")
+    check("full→member", m.resolve_member("Naoko Hayashi") is hayashi)
+    check("japanese→member", m.resolve_member("林 直子") is hayashi)
+    check("外部共著者は None", m.resolve_member("Taro Yamada") is None)
+
     print("[unit] split_authors（区切り・et al. 除去）")
     check("カンマ区切り", split_authors("A, B, C") == ["A", "B", "C"])
     check("and / & / ; も区切る",
@@ -114,6 +120,8 @@ def unit_tests() -> None:
     check("末尾 et al. を除去", split_authors("Smith J, et al.") == ["Smith J"])
     check("末尾 ほかN名 を除去", split_authors("宮崎 慎一, ほか3名") == ["宮崎 慎一"])
     check("and を含む姓を割らない", split_authors("Anderson J, Bond K") == ["Anderson J", "Bond K"])
+    check("発表者の丸印を除去", split_authors("○山田 太郎, 林 直子") == ["山田 太郎", "林 直子"])
+    check("丸印＋空白も除去", split_authors("◯ 山田 太郎, 〇林 直子") == ["山田 太郎", "林 直子"])
 
 
 def author_style_tests() -> None:
@@ -157,6 +165,29 @@ def author_style_tests() -> None:
     check("**** が出ない", "****" not in out, out)
     check("内側の強調は残る", "**Miyazaki S**" in out, out)
 
+    print("[unit] render_authors（イニシャル整形）")
+    resolver = lambda t: {"Naoko Hayashi": "Hayashi N", "林 直子": "Hayashi N"}.get(t)  # noqa: E731
+    check("照合できた著者をイニシャル化",
+          render_authors("Naoko Hayashi, Taro Yamada", AuthorStyle(initials=True), "en",
+                         name_resolver=resolver) == "Hayashi N, Taro Yamada")
+    check("initials=False なら変換しない",
+          render_authors("Naoko Hayashi", AuthorStyle(initials=False), "en",
+                         name_resolver=resolver) == "Naoko Hayashi")
+    check("強調と併用（イニシャル化した名を太字）",
+          render_authors("林 直子, A", AuthorStyle(initials=True), "ja",
+                         (lambda t: t == "林 直子"), markdown=True, name_resolver=resolver)
+          == "**Hayashi N**, A")
+
+    print("[unit] strip_title_wrap（タイトルの括弧・引用符外し）")
+    check("和括弧を外す", strip_title_wrap("「睡眠の科学」") == "睡眠の科学")
+    check("英引用符を外す", strip_title_wrap('"Sleep science"') == "Sleep science")
+    check("途中の括弧は保持", strip_title_wrap("TNF-α (review)") == "TNF-α (review)")
+    check("入れ子も外す", strip_title_wrap("（「題」）") == "題")
+    rec2 = {"type": "paper", "label": "x", "authors_raw": "Yamada T",
+            "title_en": "「Wrapped」", "title_ja": "「Wrapped」", "date": None}
+    out2 = render_one(rec2, "{title}", (), AuthorStyle(), False, set(), set(), "en")
+    check("render_one でも括弧外し", out2 == "Wrapped", out2)
+
 
 def v2_tests() -> None:
     """v2（二ヶ国語・査読正規化・upgrade）の純関数・往復検証。"""
@@ -198,6 +229,17 @@ def v2_tests() -> None:
     kept2 = by_peer_reviewed(pr2, True)
     check("発表は査読フィルタで素通し", set(kept2["type"]) == {"paper", "presentation"}
           and len(kept2) == 2, f"types={list(kept2['type'])}")
+
+    print("[v2] 国内/国際フィルタ（by_scope）")
+    sc = pd.DataFrame({"type": ["presentation", "presentation", "presentation", "paper"],
+                       "scope": ["国内", "国際", "International", None]})
+    intl = by_scope(sc, "国際")
+    check("国際を選ぶと国際のみ（論文は素通し, 空scopeの発表は除外）",
+          set(intl["type"]) == {"presentation", "paper"} and len(intl) == 3,
+          f"n={len(intl)} types={list(intl['type'])}")
+    check("すべて（空）は全件", len(by_scope(sc, "")) == 4)
+    dom = by_scope(sc, "国内")
+    check("国内を選ぶと国内のみ＋論文素通し", len(dom) == 2)
 
     print("[v2] ingest --from upgrade 往復")
     import importlib.util

@@ -26,6 +26,9 @@ _AUTHOR_SEP_RE = re.compile(r"\s*[;,]\s*|\s+and\s+|\s*&\s*", re.I)
 # 著者リスト末尾の省略表記（et al. / ほかN名 / 他）。分割前に除去する。
 _ETAL_TAIL_RE = re.compile(r"[,，、]?\s*(et\s*al\.?|ほか.*|他\s*\d*\s*名?)\s*$", re.I)
 
+# 発表者（登壇者）を示す丸印。氏名の一部ではないので表示・照合では無視する。
+_PRESENTER_MARKS = "○◯〇●◎"
+
 
 def normalize(text: str) -> str:
     """比較用に正規化（Unicode 正規化・小文字化・記号除去・空白圧縮）。"""
@@ -104,14 +107,16 @@ def split_authors(authors_raw: str) -> list[str]:
     """著者セルを個々の著者文字列に分割。
 
     区切りはカンマ／セミコロン／"&"／語境界の "and"。注記（Co-first 等）と
-    末尾の省略表記（et al. / ほかN名 / 他）を除去してから分割する。
+    末尾の省略表記（et al. / ほかN名 / 他）を除去してから分割し、各氏名の
+    両端から発表者を示す丸印（○◯〇●◎）を取り除く。
     """
     if not authors_raw:
         return []
     text = _ANNOTATION_RE.sub("", str(authors_raw))
     text = _ETAL_TAIL_RE.sub("", text)  # 末尾の et al./ほか…/他 を除去
-    # 先頭/末尾の "*"（共同筆頭マーク等）も除去。Markdown で誤って斜体にならないように。
-    parts = [p.strip(" .;*　") for p in _AUTHOR_SEP_RE.split(text)]
+    # 先頭/末尾の "*"（共同筆頭マーク等）と発表者の丸印を除去。
+    # "*" は Markdown で誤って斜体にならないように、丸印は氏名の一部でないため。
+    parts = [p.strip(" .;*　" + _PRESENTER_MARKS) for p in _AUTHOR_SEP_RE.split(text)]
     return [p for p in parts if p]
 
 
@@ -148,6 +153,16 @@ class AuthorMatcher:
         # 誤って拾うため、姓不在に限定する。
         score = max(fuzz.token_sort_ratio(norm, a) for a in member.aliases)
         return score >= self.threshold
+
+    def resolve_member(self, author_token: str) -> Member | None:
+        """著者トークンに対応する名簿メンバーを返す（無ければ None）。
+
+        イニシャル整形（姓＋名イニシャル）に使う。最初に一致したメンバーを採る。
+        """
+        for m in self.members:
+            if self.matches_member(author_token, m):
+                return m
+        return None
 
     def record_has_member(self, authors_raw: str, member: Member) -> bool:
         tokens = split_authors(authors_raw)

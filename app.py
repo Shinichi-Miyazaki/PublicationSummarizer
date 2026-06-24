@@ -16,6 +16,7 @@ from publication_summarizer import (
     by_authors,
     by_fiscal_year,
     by_peer_reviewed,
+    by_scope,
     by_types,
     load_publications,
     load_templates,
@@ -96,6 +97,30 @@ def style_fields_for(rtype: str) -> list[str]:
     return out
 
 
+def make_initials_resolver(matcher: AuthorMatcher, fmt: str):
+    """著者トークン→「姓＋名イニシャル」を返す述語を作る（名簿照合・結果をメモ化）。
+
+    照合できない外部共著者は None を返し、formatter 側で元表記のまま残す。
+    fmt: "last_first"=「Yamada T」/ "first_last"=「T. Yamada」。
+    """
+    cache: dict[str, str | None] = {}
+
+    def resolve(token: str) -> str | None:
+        if token not in cache:
+            m = matcher.resolve_member(token)
+            if m is None:
+                cache[token] = None
+            else:
+                fi = m.first[:1]
+                if not fi:
+                    cache[token] = m.last
+                else:
+                    cache[token] = f"{fi}. {m.last}" if fmt == "first_last" else f"{m.last} {fi}"
+        return cache[token]
+
+    return resolve
+
+
 def placeholder_legend(rtype: str, lang: str) -> str:
     """その種別で使える差し込み項目の凡例（Markdown）。"""
     return "\n".join(
@@ -160,6 +185,10 @@ def main() -> None:
 
         only_pr = st.checkbox(tr("peer_label", lang), value=False)
 
+        scope_options = {tr("scope_all", lang): "", tr("scope_domestic", lang): "国内", tr("scope_intl", lang): "国際"}
+        scope_choice = st.radio(tr("scope_label", lang), list(scope_options), horizontal=True)
+        scope = scope_options[scope_choice]
+
         st.header(tr("sb_format", lang))
         preset_disp = [preset_label(k, lang) for k in preset_keys]
         default_idx = preset_keys.index("科研費") if "科研費" in preset_keys else 0
@@ -170,6 +199,7 @@ def main() -> None:
     filtered = by_types(df, selected_types)
     filtered = by_fiscal_year(filtered, fy_min, fy_max)
     filtered = by_peer_reviewed(filtered, only_pr)
+    filtered = by_scope(filtered, scope)
     filtered = by_authors(filtered, sel_members, matcher)
 
     caption = tr("count_caption", lang).format(total=len(df), shown=len(filtered))
@@ -241,6 +271,23 @@ def main() -> None:
                     value=spec.get("author_emphasis", "bold") != "none",
                     key=f"aemph_{rtype}", help=tr("author_emphasis_help", lang),
                 )
+
+            author_initials = st.checkbox(
+                tr("author_initials_label", lang),
+                value=bool(spec.get("author_initials", False)),
+                key=f"ainit_{rtype}", help=tr("author_initials_help", lang),
+            )
+            initials_fmt = str(spec.get("author_initials_format", "last_first") or "last_first")
+            if author_initials:
+                fmt_options = {
+                    tr("author_initials_fmt_last", lang): "last_first",
+                    tr("author_initials_fmt_first", lang): "first_last",
+                }
+                fmt_choice = st.radio(
+                    tr("author_initials_fmt_label", lang), list(fmt_options),
+                    key=f"ainitfmt_{rtype}", horizontal=True,
+                )
+                initials_fmt = fmt_options[fmt_choice]
         bold_fields = {disp_to_key[d] for d in bold_disp}
         italic_fields = {disp_to_key[d] for d in italic_disp}
         spec = {
@@ -248,13 +295,17 @@ def main() -> None:
             "author_max": int(author_max), "author_etal": author_etal,
             "author_etal_count": author_etal_count, "author_keep_highlighted": author_keep_hl,
             "author_emphasis": "bold" if author_bold else "none",
+            "author_initials": author_initials, "author_initials_format": initials_fmt,
         }
+
+        # イニシャル整形は名簿照合で「姓＋名イニシャル」を作る述語を渡す（OFF なら None）。
+        name_resolver = make_initials_resolver(matcher, initials_fmt) if author_initials else None
 
         result = render_records(
             sub, spec,
             numeric_fields=NUMERIC_BY_TYPE.get(rtype, ()),
             bold_fields=bold_fields, italic_fields=italic_fields, lang=lang,
-            highlight=highlight,
+            highlight=highlight, name_resolver=name_resolver,
         )
         st.caption(tr("copy_hint", lang))
         st.markdown(result["markdown"])

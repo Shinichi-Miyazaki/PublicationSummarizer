@@ -6,7 +6,7 @@ Streamlit (app.py) と Colab の双方から再利用できるよう、UI 非依
 from .schema import SHEET_SPECS, RECORD_TYPES, SheetSpec
 from .loader import load_publications, load_workbook_bytes, DEFAULT_SHEET_ID
 from .roster import Member, parse_roster, AuthorMatcher
-from .filters import by_authors, by_fiscal_year, by_types, by_peer_reviewed
+from .filters import by_authors, by_fiscal_year, by_types, by_peer_reviewed, by_scope
 from .formatter import load_templates, render_records, clean_number
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "by_fiscal_year",
     "by_types",
     "by_peer_reviewed",
+    "by_scope",
     "load_templates",
     "render_records",
     "clean_number",

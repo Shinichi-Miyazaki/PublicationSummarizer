@@ -53,6 +53,10 @@ STRINGS: dict[str, tuple[str, str]] = {
     ),
     "fy_label": ("年度（4月始まり）", "Fiscal year (Apr–Mar)"),
     "peer_label": ("査読ありのみ（論文）", "Peer-reviewed only (papers)"),
+    "scope_label": ("国内/国際（発表・受賞・アウトリーチ）", "Domestic/Intl (talks, awards, outreach)"),
+    "scope_all": ("すべて", "All"),
+    "scope_domestic": ("国内", "Domestic"),
+    "scope_intl": ("国際", "International"),
     "sb_format": ("書式", "Format"),
     "preset_label": ("提出先（テンプレート）", "Target (template)"),
     "preset_help": (
@@ -101,6 +105,16 @@ STRINGS: dict[str, tuple[str, str]] = {
         "サイドバーで著者を選ぶと、出力中のその名前が太字になります。",
         "When you pick authors in the sidebar, their names are bolded in the output.",
     ),
+    "author_initials_label": ("名（ファーストネーム）をイニシャルにする", "Abbreviate first names to initials"),
+    "author_initials_help": (
+        "名簿で照合できた著者を「姓＋名イニシャル」へ整形します（例: Naoko Hayashi → Hayashi N）。"
+        "照合できない外部共著者は元の表記のままです。",
+        "Members matched in the roster are reformatted as surname + initial "
+        "(e.g., Naoko Hayashi → Hayashi N). Unmatched co-authors are left unchanged.",
+    ),
+    "author_initials_fmt_label": ("イニシャルの形式", "Initial format"),
+    "author_initials_fmt_last": ("姓 名イニシャル（例: Yamada T）", "Surname + initial (e.g., Yamada T)"),
+    "author_initials_fmt_first": ("名イニシャル. 姓（例: T. Yamada）", "Initial. + surname (e.g., T. Yamada)"),
     "copy_hint": (
         "👇 ドラッグで選択してコピーすると、太字・斜体も保持されます。",
         "👇 Select and copy the text below to keep bold/italic formatting.",
