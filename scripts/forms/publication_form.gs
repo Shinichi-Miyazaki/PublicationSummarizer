@@ -38,7 +38,7 @@ var SOURCE_LABEL = "form";
 // 未登録なら従来のヒューリスティック解析にフォールバックする。
 var LLM_BASE_URL = "https://models.github.ai/inference";
 
-var LLM_MODEL = "openai/gpt-4o-mini";
+var LLM_MODEL = "openai/gpt-4.1-mini";
 var LLM_TOKEN_PROP = "GITHUB_MODELS_TOKEN";
 
 /**
