@@ -22,6 +22,10 @@ var APP_STATUS_NEW = "未確認";
 // 編集をロックするメタ列（ヘッダ名）。publication_form.gs の META_FIELDS と一致。
 var META_FIELDS_LOCK = ["record_id", "status", "submitter", "source", "created_at", "note"];
 
+// 保護範囲（ヘッダ・メタ列）も編集できる管理者（チェック担当）。オーナーは自動で含まれる。
+// チェック担当を複数名にする場合は、ここにメールアドレスを追記する（要・シートの編集権共有）。
+var ADMIN_EDITORS = [];  // 例: ["checker@example.com"]
+
 // タブ名 → 種別（DOI 補完の対象判定に使用）。publication_form.gs と一致。
 var TAB_TYPE = {
   "Original Papers": "paper", "Books": "book", "presentations": "presentation",
@@ -555,6 +559,10 @@ function protectRange_(range, me) {
   p.removeEditors(p.getEditors());
   if (p.canDomainEdit()) p.setDomainEdition(false);
   p.addEditor(me);
+  // 管理者（チェック担当）も保護範囲を編集できるようにする。未共有のアドレスは無視。
+  ADMIN_EDITORS.forEach(function (email) {
+    try { p.addEditor(email); } catch (e) {}
+  });
 }
 
 /** onEdit トリガ（onEditRevert）を重複なく設置する。 */
