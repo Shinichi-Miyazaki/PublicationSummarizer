@@ -41,6 +41,48 @@ def load_field_map() -> dict:
     return json.loads(m.group(1))
 
 
+def load_bulk_splits() -> dict:
+    """.gs から BULK_SPLITS（strict JSON）を抽出して dict で返す。"""
+    text = _GS_PATH.read_text(encoding="utf-8")
+    m = re.search(r"// BULK_SPLITS_JSON_BEGIN\s*var BULK_SPLITS\s*=\s*(\{.*?\})\s*;\s*// BULK_SPLITS_JSON_END",
+                  text, re.DOTALL)
+    if not m:
+        raise ValueError("publication_form.gs から BULK_SPLITS ブロックを抽出できませんでした。")
+    return json.loads(m.group(1))
+
+
+def bulk_split_tests(check) -> None:
+    """一括貼り付けの区分 preset が、フォームの選択肢と矛盾しないことを検証。
+
+    preset は解析結果へ無条件に書き込まれるため、フォームの radio 選択肢に無い値を入れると
+    1 件ずつ入力した行と表記が揃わず、集計・フィルタで別物として扱われてしまう。
+    """
+    print("[bulk] 一括貼り付けの区分 preset と FIELD_MAP 選択肢の一致")
+    field_map = load_field_map()
+    splits = load_bulk_splits()
+
+    labels: list[str] = []
+    for rtype, entries in splits.items():
+        check(f"[{rtype}] BULK_SPLITS の種別が FIELD_MAP に存在", rtype in field_map)
+        choices_of = {q["field"]: q.get("choices") for q in field_map[rtype]["questions"]}
+        for entry in entries:
+            labels.append(entry["label"])
+            for field, value in entry["preset"].items():
+                check(f"[{rtype}] preset の {field} が設問に存在", field in choices_of,
+                      f"fields={sorted(choices_of)}")
+                check(f"[{rtype}] 『{value}』が {field} の選択肢にある",
+                      value in (choices_of.get(field) or []),
+                      f"choices={choices_of.get(field)}")
+
+    # 一括リストのラベルは重複不可（bulkChoiceOf_ がラベルで種別・preset を引くため）。
+    all_labels = labels + [
+        spec["label"] + " / " + spec["label_en"]
+        for rtype, spec in field_map.items() if rtype not in splits
+    ]
+    check("一括リストのラベルが一意", len(all_labels) == len(set(all_labels)),
+          f"labels={all_labels}")
+
+
 def form_field_tests(check) -> None:
     """verify.py の check(name, cond, detail) を使って一致を検証する。"""
     print("[form] Apps Script FIELD_MAP と Canonical スキーマの一致")
@@ -94,6 +136,7 @@ def _main() -> None:
         pass
 
     form_field_tests(check)
+    bulk_split_tests(check)
     template_header_tests(check)
     print(f"\nRESULT: {'OK' if not failures else str(len(failures)) + ' failed'}")
     sys.exit(1 if failures else 0)

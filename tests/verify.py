@@ -48,7 +48,8 @@ from publication_summarizer.filters import by_peer_reviewed, by_scope, by_invite
 from publication_summarizer.i18n import rt_label, tr  # noqa: E402
 from publication_summarizer.roster import Member, split_authors  # noqa: E402
 from publication_summarizer.schema import BILINGUAL_FIELDS, display_fields  # noqa: E402
-from tests.test_form_fields import form_field_tests, template_header_tests  # noqa: E402
+from tests.test_form_fields import (  # noqa: E402
+    bulk_split_tests, form_field_tests, template_header_tests)
 
 PASS, FAIL = 0, 0
 
@@ -415,6 +416,16 @@ def llm_parse_tests() -> None:
     check("空文字 doi は脱落", "doi" not in recs[0])
     check("著者のみの件を採用", recs[1].get("authors") == "Hayashi N")
 
+    print("[llm] プロンプトのフィールド説明（キー名だけでは意味が伝わらない）")
+    paper_prompt = lp._build_prompt("paper", "<TEXT>")
+    book_prompt = lp._build_prompt("book", "<TEXT>")
+    check("paper: キーに日本語ラベルが付く", "title（論文タイトル）" in paper_prompt)
+    check("book: キーに日本語ラベルが付く", "review_title（章・総説タイトル）" in book_prompt)
+    # book は journal キーを持たず、和文総説の誌名は book_title に入れる約束。
+    # これを伝えないと LLM が誌名を捨て、必須の book_title_ja が欠損する。
+    check("book: 和文総説の誌名の行き先を明示", "掲載誌名を book_title に入れる" in book_prompt)
+    check("paper: 他種別の補足は混ぜない", "和文総説" not in paper_prompt)
+
     print("[llm] 接続先の既定値（GitHub Models は 2026-07-30 retirement 済み）")
     check("base_url が OpenAI", lp.DEFAULT_BASE_URL == "https://api.openai.com/v1", lp.DEFAULT_BASE_URL)
     check("モデルIDに openai/ 接頭辞が無い", not lp.DEFAULT_MODEL.startswith("openai/"), lp.DEFAULT_MODEL)
@@ -494,6 +505,7 @@ def main() -> None:
     unit_tests()
     author_style_tests()
     form_field_tests(check)
+    bulk_split_tests(check)
     template_header_tests(check)
     v2_tests()
     paste_tests()

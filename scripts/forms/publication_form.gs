@@ -167,6 +167,19 @@ var FIELD_MAP = {
 // 種別の並び（フォームのセクション順・ラジオ選択肢順）。
 var TYPE_ORDER = ["paper", "book", "presentation", "award", "outreach", "publicity"];
 
+// 一括貼り付けで種別リストに畳み込む固定語彙。引用文からは復元できない（＝LLM にも解析にも
+// 埋められない）必須項目を、メンバーの種別選択で確定させる。preset は解析結果の全件に一律適用。
+// 「1 回の送信につき 1 種別」の制約を「1 種別 1 区分」へ広げる形。
+// 本体は strict JSON（tests/test_form_fields.py が FIELD_MAP の選択肢との一致を検証する）。
+// BULK_SPLITS_JSON_BEGIN
+var BULK_SPLITS = {
+  "paper": [
+    {"label": "原著論文 / Original articles", "preset": {"category": "原著論文"}},
+    {"label": "英文総説 / English reviews", "preset": {"category": "英文総説"}}
+  ]
+};
+// BULK_SPLITS_JSON_END
+
 var PROP_KEY = "FORM_MAP"; // Script Properties に保存する設問マップのキー。
 var DOI_PATTERN = "^10\\.\\d{4,9}/.+$";
 
@@ -216,11 +229,15 @@ function buildForm() {
 
   // 一括貼り付けセクション（複数件をまとめて登録）。
   var bulkPage = form.addPageBreakItem().setTitle("まとめて貼り付け / Bulk paste");
+  var bulkChoiceList = bulkChoices_();
   var bulkTypeItem = form.addListItem()
     .setTitle("貼り付ける業績の種別 / Type of the pasted items")
-    .setHelpText("貼り付けるリストの種別を選んでください（1回の送信につき1種別）。")
+    .setHelpText(
+      "貼り付けるリストの種別を選んでください（1回の送信につき1種別）。\n" +
+      "論文は区分ごとに分けて貼り付けてください（引用文からは区分を判別できないため）。"
+    )
     .setRequired(true)
-    .setChoiceValues(TYPE_ORDER.map(function (t) { return typeChoiceText_(t); }));
+    .setChoiceValues(bulkChoiceList.map(function (c) { return c.label; }));
   var bulkTextItem = form.addParagraphTextItem()
     .setTitle("業績リスト（researchmap 等からプレーンテキストで貼り付け） / Paste your list")
     .setHelpText(
@@ -241,12 +258,14 @@ function buildForm() {
 
   // 設問マップを保存（route が itemId から種別・フィールドを引く）。
   PropertiesService.getScriptProperties().setProperty(PROP_KEY, JSON.stringify({
+    formId: form.getId(), // updateBulkChoices が作り直さずに設問を更新するために保持。
     reporterId: String(reporterItem.getId()),
     typeId: String(typeItem.getId()),
     items: itemMap,
     bulkChoiceLabel: bulkChoiceLabel,
     bulkTypeId: String(bulkTypeItem.getId()),
-    bulkTextId: String(bulkTextItem.getId())
+    bulkTextId: String(bulkTextItem.getId()),
+    bulkChoices: bulkChoiceList
   }));
 
   installTrigger_(form);
@@ -305,6 +324,94 @@ function typeChoiceText_(type) {
   return s.label_en ? (s.label + " / " + s.label_en) : s.label;
 }
 
+/**
+ * 一括貼り付けの種別リスト [{label, type, preset}]。BULK_SPLITS のある種別は区分ごとに分割し、
+ * 無い種別は従来どおり種別ラベルのまま 1 項目にする。
+ */
+function bulkChoices_() {
+  var out = [];
+  TYPE_ORDER.forEach(function (type) {
+    var splits = BULK_SPLITS[type];
+    if (splits) {
+      splits.forEach(function (s) {
+        out.push({label: s.label, type: type, preset: s.preset});
+      });
+    } else {
+      out.push({label: typeChoiceText_(type), type: type, preset: {}});
+    }
+  });
+  return out;
+}
+
+/**
+ * 一括ページで選ばれたラベルから {label, type, preset} を引く。
+ * 旧マップ（bulkChoices 未保存）は種別ラベルとして解決し、preset 無しで従来どおり動かす。
+ */
+function bulkChoiceOf_(map, label) {
+  var list = map.bulkChoices || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].label === label) return list[i];
+  }
+  var type = labelToType_(label);
+  return type ? {label: label, type: type, preset: {}} : null;
+}
+
+/** preset を 1 件へ適用。解析結果が既に値を持つ項目は上書きしない。 */
+function applyPreset_(rec, preset) {
+  Object.keys(preset || {}).forEach(function (k) {
+    if (!String(rec[k] || "").trim()) rec[k] = preset[k];
+  });
+}
+
+/**
+ * 既存フォームの「一括貼り付けの種別」選択肢を現在の bulkChoices_() へ更新する。
+ * フォームは作り直さない（URL が変わらない）ので、配布済みのリンクをそのまま使える。
+ * 区分の分割を追加した後などに、エディタの関数選択で updateBulkChoices を選び「実行」する。
+ */
+function updateBulkChoices() {
+  var props = PropertiesService.getScriptProperties();
+  var map = JSON.parse(props.getProperty(PROP_KEY) || "null");
+  if (!map || !map.bulkTypeId) {
+    Logger.log("設問マップがありません。先に buildForm を実行してください。");
+    return;
+  }
+  var form = openTargetForm_(map);
+  if (!form) {
+    Logger.log("フォームを特定できません。スクリプト プロパティ FORM_ID に"
+      + "フォームの ID（編集 URL の /d/ と /edit の間）を登録して再実行してください。");
+    return;
+  }
+  var item = form.getItemById(Number(map.bulkTypeId));
+  if (!item) {
+    Logger.log("一括貼り付けの種別設問が見つかりません（id=" + map.bulkTypeId + "）。");
+    return;
+  }
+
+  var list = bulkChoices_();
+  item.asListItem()
+    .setChoiceValues(list.map(function (c) { return c.label; }))
+    .setHelpText(
+      "貼り付けるリストの種別を選んでください（1回の送信につき1種別）。\n" +
+      "論文は区分ごとに分けて貼り付けてください（引用文からは区分を判別できないため）。"
+    );
+
+  map.formId = form.getId();
+  map.bulkChoices = list;
+  props.setProperty(PROP_KEY, JSON.stringify(map));
+  Logger.log("一括貼り付けの種別リストを更新しました:\n  "
+    + list.map(function (c) { return c.label; }).join("\n  "));
+}
+
+/** 対象フォームを開く（保存済み formId → スクリプト プロパティ FORM_ID → バインド先の順）。 */
+function openTargetForm_(map) {
+  var ids = [map.formId, scriptProp_("FORM_ID")];
+  for (var i = 0; i < ids.length; i++) {
+    if (!ids[i]) continue;
+    try { return FormApp.openById(ids[i]); } catch (e) { /* 次の候補へ */ }
+  }
+  try { return FormApp.getActiveForm(); } catch (e) { return null; }
+}
+
 /** route の onFormSubmit トリガを（重複なく）設置する。 */
 function installTrigger_(form) {
   ScriptApp.getProjectTriggers().forEach(function (t) {
@@ -359,11 +466,12 @@ function route(e) {
 
 /** 一括貼り付け: 種別を判定し、貼り付けテキストを解析して 1 件ずつ追記。 */
 function routeBulk_(byId, map, reporter) {
-  var type = labelToType_(byId[map.bulkTypeId]);
-  if (!type) {
+  var picked = bulkChoiceOf_(map, byId[map.bulkTypeId]);
+  if (!picked) {
     Logger.log("[routeBulk] 種別を判定できませんでした: " + byId[map.bulkTypeId]);
     return;
   }
+  var type = picked.type;
   var text = String(byId[map.bulkTextId] || "");
   // LLM 構造化を試み、失敗（トークン無・API/JSON エラー）時は従来解析へフォールバック。
   var recs, source = "paste-form";
@@ -378,10 +486,11 @@ function routeBulk_(byId, map, reporter) {
   var ss = SpreadsheetApp.openById(CANONICAL_SHEET_ID);
   var n = 0;
   recs.forEach(function (rec) {
+    applyPreset_(rec, picked.preset); // 種別選択で確定した区分等を全件へ適用。
     appendOne_(ss, type, rec, reporter, source);
     n++;
   });
-  Logger.log("[routeBulk] " + type + " を " + n + " 件追記しました。");
+  Logger.log("[routeBulk] " + picked.label + " を " + n + " 件追記しました。");
 }
 
 /**
@@ -550,6 +659,33 @@ function baseFieldsOf_(type) {
   return out;
 }
 
+/**
+ * base フィールド → 日本語ラベル。FIELD_MAP の設問見出しが出典（二重管理を避ける）。
+ * 二ヶ国語 base は日本語側の見出しを採り、「（日本語）」等の注記は落とす。
+ */
+function baseLabelsOf_(type) {
+  var out = {};
+  FIELD_MAP[type].questions.forEach(function (q) {
+    var f = q.field, base = f.replace(/_(ja|en)$/, "");
+    if (BILINGUAL_BASES.indexOf(base) >= 0) f = base;
+    if (out[f]) return; // 最初に現れた見出し（＝日本語側）を採用。
+    out[f] = String(q.title).replace(/（(日本語|English[^）]*)）\s*$/, "").trim();
+  });
+  return out;
+}
+
+// 種別ごとの補足。スキーマ上の非自明な約束（キー名から意味を推測できないもの）を LLM に明示する。
+// book は「著書」と「和文総説」を 1 種別で扱い journal キーを持たないため、誌名の行き先を必ず伝える。
+var LLM_TYPE_NOTES = {
+  book:
+    "- この種別は「著書」と「和文総説」の両方を扱う。journal というキーは存在しない。\n" +
+    "- **和文総説（雑誌に載った総説）は、掲載誌名を book_title に入れる**" +
+    "（book_title は「書名または掲載誌名」の意味）。\n" +
+    "- review_title は章タイトルまたは総説タイトル。\n" +
+    "- chapter は章番号のみ（章タイトルは review_title に入れる）。\n" +
+    "- 書名に出版社が括弧書きで併記されていれば publisher へ分離する。\n"
+};
+
 /** LLM 応答（配列）を許可キーのみ・文字列化・空件除外で base-dict 配列へ正規化。 */
 function normalizeLlmRecords_(raw, type) {
   var allowed = {};
@@ -578,16 +714,22 @@ function normalizeLlmRecords_(raw, type) {
 function parseRecordsLlm_(text, type) {
   var token = scriptProp_(LLM_TOKEN_PROP);
   if (!token) throw new Error(LLM_TOKEN_PROP + " 未設定");
-  var fields = baseFieldsOf_(type);
+  // キー名だけでは意味が伝わらない（例: 和文総説の誌名は book_title）ので、必ずラベルを添える。
+  var labels = baseLabelsOf_(type);
+  var fields = baseFieldsOf_(type).map(function (f) {
+    return labels[f] ? (f + "（" + labels[f] + "）") : f;
+  });
   var prompt =
     "あなたは研究業績テキストの構造化抽出器です。貼り付けテキストから業績を1件ずつ抽出し、" +
     '{"records": [ {...}, ... ]} という JSON だけを返してください。\n' +
-    "各レコードのキーは次のみを使う: " + fields.join(", ") + "\n" +
+    "各レコードのキーは次のみを使う（括弧内はその項目の意味）: " + fields.join(", ") + "\n" +
     "規則:\n- 本文に存在する情報だけを入れる。推測・創作はしない。\n" +
     '- doi は本文に明記がある時だけ。無ければ ""（絶対に生成・推測しない）。\n' +
     '- date は "YYYY/M" もしくは "YYYY/M/D"。\n' +
     "- title・journal・conference 等は原文の言語のまま（翻訳しない）。\n" +
-    '- volume / issue は数字、pages は "開始-終了"。不明な項目は ""。\n\nテキスト:\n' + text;
+    '- volume / issue は数字、pages は "開始-終了"。不明な項目は ""。\n' +
+    (LLM_TYPE_NOTES[type] || "") +
+    "\nテキスト:\n" + text;
 
   var resp = UrlFetchApp.fetch(LLM_BASE_URL + "/chat/completions", {
     method: "post",

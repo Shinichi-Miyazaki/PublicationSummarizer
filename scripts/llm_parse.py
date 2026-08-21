@@ -61,20 +61,51 @@ def _chunks(text: str):
         yield "\n".join(lines[i:i + _MAX_LINES_PER_CHUNK])
 
 
+# 種別ごとの補足。スキーマ上の非自明な約束（キー名から意味を推測できないもの）を明示する。
+# book は「著書」と「和文総説」を 1 種別で扱い journal キーを持たないため、誌名の行き先を必ず伝える。
+_TYPE_NOTES: dict[str, str] = {
+    "book": (
+        "- この種別は「著書」と「和文総説」の両方を扱う。journal というキーは存在しない。\n"
+        "- **和文総説（雑誌に載った総説）は、掲載誌名を book_title に入れる**"
+        "（book_title は「書名または掲載誌名」の意味）。\n"
+        "- review_title は章タイトルまたは総説タイトル。\n"
+        "- chapter は章番号のみ（章タイトルは review_title に入れる）。\n"
+        "- 書名に出版社が括弧書きで併記されていれば publisher へ分離する。\n"
+    ),
+}
+
+
+def _field_list(rtype: str) -> str:
+    """`field（日本語ラベル）` 形式のキー一覧。キー名だけでは意味が伝わらないため必ずラベルを添える。"""
+    labels = _base_labels(rtype)
+    return ", ".join(
+        f"{f}（{labels[f]}）" if f in labels else f for f in _BASE_FIELDS[rtype]
+    )
+
+
+def _base_labels(rtype: str) -> dict[str, str]:
+    """base フィールド → 日本語ラベル。出典は make_templates.BASE_LABELS（二重管理を避ける）。"""
+    try:
+        from make_templates import BASE_LABELS  # 遅延 import（openpyxl 依存を読み込み時に持ち込まない）
+    except Exception:  # noqa: BLE001  # 取得できなければラベル無しのキー名だけで続行する
+        return {}
+    return BASE_LABELS.get(rtype, {})
+
+
 def _build_prompt(rtype: str, chunk: str) -> str:
-    fields = list(_BASE_FIELDS[rtype])
     return (
         "あなたは研究業績テキストの構造化抽出器です。貼り付けテキストから業績を 1 件ずつ抽出し、"
         '{"records": [ {...}, ... ]} という JSON だけを返してください。\n'
-        f"各レコードのキーは次のみを使う: {', '.join(fields)}\n"
+        f"各レコードのキーは次のみを使う（括弧内はその項目の意味）: {_field_list(rtype)}\n"
         "規則:\n"
         "- 本文に存在する情報だけを入れる。推測・創作はしない。\n"
         '- doi は本文に明記がある時だけ。無ければ "" （絶対に生成・推測しない）。\n'
         '- date は "YYYY/M" もしくは "YYYY/M/D"。\n'
         "- title・journal・conference 等は原文の言語のまま（翻訳しない）。\n"
         '- volume / issue は数字、pages は "開始-終了"。\n'
-        '- 不明な項目は "" を入れる。\n\n'
-        "テキスト:\n" + chunk
+        '- 不明な項目は "" を入れる。\n'
+        + _TYPE_NOTES.get(rtype, "")
+        + "\nテキスト:\n" + chunk
     )
 
 
