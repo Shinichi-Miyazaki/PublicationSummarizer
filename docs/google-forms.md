@@ -59,6 +59,19 @@
 
 > CLI（`scripts/ingest_paste.py --llm`）でも同じ LLM 構造化ができます（`GITHUB_TOKEN` を環境変数に設定）。**メンバー配布にはこのフォームの貼り付けが最も簡単**です。
 
+##### LLM が使われていないときの切り分け
+
+フォールバックは無言（実行ログのみ）なので、**`source` 列が `paste-llm` か `paste-form` か**が最初の目印です。`paste-form` のままなら、上から順に潰します。
+
+1. **疎通・トークン**：Apps Script エディタで関数 `testLlmToken` を選び「実行」→「実行ログ」を確認。本番と同じ JSON モード（`response_format`）付きと、それを外した素の呼び出しの両方を試し、どこで落ちるかをログが指し示します。
+   - 両方 `HTTP 200` → 疎通は正常。原因は 2. か 3.
+   - JSON モードだけ失敗 → `LLM_MODEL` が JSON モード非対応。モデルを変えるか `parseRecordsLlm_` の `response_format` を外す
+   - `HTTP 401` → PAT に **Models: Read-only** 権限が無い／失効
+   - `HTTP 404` → `LLM_MODEL` のモデル ID 違い
+   - 「登録: なし」 → スクリプト プロパティ `GITHUB_MODELS_TOKEN` が未登録（手順 2 をやり直す）
+2. **経路**：LLM を通るのは**「まとめて貼り付け」を選んだ送信だけ**です。通常の 1 件ずつの入力は設計上 LLM を使いません（`source` は `form`）。
+3. **反映漏れ**：リポジトリの `scripts/forms/publication_form.gs` を更新しても、**Apps Script プロジェクトへ貼り直すまで本番には反映されません**。LLM 機能より前のコードが動いていないか確認してください。
+
 #### CLI で精度を上げる：LLM 構造化（`--llm`、GitHub Models）
 
 貼り付けテキストの解析は通常ヒューリスティック（末尾の日付で区切る等）ですが、researchmap 以外の崩れた表記では取りこぼしが出ます。**`--llm` を付けると GitHub Models（OpenAI 互換・無料枠）でテキストを構造化抽出**し、手直しを減らせます。

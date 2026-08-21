@@ -616,6 +616,10 @@ function parseRecordsLlm_(text, type) {
 /**
  * 手動実行用の診断: トークンの有無と GitHub Models への接続結果をログに出す。
  * エディタ上部の関数選択で testLlmToken を選び「実行」→「表示 → ログ」で結果を確認する。
+ *
+ * 本番 parseRecordsLlm_ と同じ JSON モード（response_format）付きと、それを外した素の呼び出しの
+ * 両方を試す。JSON モードだけ失敗する場合はモデル／エンドポイントが JSON モード非対応であり、
+ * 素の呼び出しが通っても本番は毎回フォールバックする（この差が無言フォールバックの典型原因）。
  *   HTTP 200 = 正常 / 401 = トークン無効・Models権限なし / 404 = モデルID違い / それ以外 = 本文参照
  */
 function testLlmToken() {
@@ -626,19 +630,46 @@ function testLlmToken() {
       + LLM_TOKEN_PROP + " を登録してください。");
     return;
   }
+  var withJson = probeLlm_(token, true);
+  var plain = probeLlm_(token, false);
+  if (withJson === 200) {
+    Logger.log("→ 本番と同条件で疎通 OK。LLM 未使用なら原因は別レイヤ（下記を確認）:"
+      + " ①送信が「まとめて貼り付け」経路か ②この .gs が最新版としてフォームに反映されているか。");
+  } else if (plain === 200) {
+    Logger.log("→ JSON モード（response_format）だけ失敗。model=" + LLM_MODEL
+      + " が JSON モード非対応の可能性。parseRecordsLlm_ の response_format を外すか"
+      + " JSON モード対応モデルへ LLM_MODEL を変更してください。");
+  } else {
+    Logger.log("→ どちらも失敗。401=PAT の models:read 権限無効 / 404=モデルID違い。");
+  }
+}
+
+/** testLlmToken の 1 回分の疎通試行。HTTP ステータスを返す（例外時は -1）。 */
+function probeLlm_(token, withJsonMode) {
+  var payload = {
+    model: LLM_MODEL,
+    temperature: 0,
+    messages: [{role: "user", content: "Reply with the single word: ok"}]
+  };
+  if (withJsonMode) {
+    // JSON モードはプロンプトに JSON の語を含める必要がある（OpenAI 互換仕様）。
+    payload.response_format = {type: "json_object"};
+    payload.messages = [{role: "user", content: '{"ok": true} という JSON だけを返してください。'}];
+  }
+  var label = withJsonMode ? "JSONモードあり（本番と同条件）" : "JSONモードなし";
   try {
     var resp = UrlFetchApp.fetch(LLM_BASE_URL + "/chat/completions", {
       method: "post", contentType: "application/json",
       headers: {Authorization: "Bearer " + token}, muteHttpExceptions: true,
-      payload: JSON.stringify({
-        model: LLM_MODEL, temperature: 0,
-        messages: [{role: "user", content: "Reply with the single word: ok"}]
-      })
+      payload: JSON.stringify(payload)
     });
-    Logger.log("HTTP " + resp.getResponseCode() + " / model=" + LLM_MODEL);
+    var code = resp.getResponseCode();
+    Logger.log("[" + label + "] HTTP " + code + " / model=" + LLM_MODEL);
     Logger.log(String(resp.getContentText()).slice(0, 500));
+    return code;
   } catch (e) {
-    Logger.log("例外: " + e);
+    Logger.log("[" + label + "] 例外: " + e);
+    return -1;
   }
 }
 
