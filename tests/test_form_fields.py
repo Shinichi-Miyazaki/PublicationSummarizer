@@ -51,6 +51,35 @@ def load_bulk_splits() -> dict:
     return json.loads(m.group(1))
 
 
+def sheet_keyword_tests(check) -> None:
+    """.gs のタブ名が、Python 側と同じ「キーワード部分一致」で実シートに解決できることを検証。
+
+    実シート名は「著書、和文総説　Books, Japanese Reviews」のように接頭辞が付く。Python の
+    schema.spec_for_sheet は部分一致で解決するが、.gs が完全一致で探すと送信が黙って捨てられる
+    （原著だけ通り、著書が来ない）。両者のキーワードが一致していることを保証する。
+    """
+    print("[sheet] .gs のタブ名 と schema のシート判定キーワードの一致")
+    from publication_summarizer.schema import SHEET_SPECS, spec_for_sheet  # noqa: PLC0415
+
+    field_map = load_field_map()
+    keyword_of = {spec.rtype: spec.keyword for spec in SHEET_SPECS}
+
+    for rtype, spec in field_map.items():
+        check(f"[{rtype}] .gs の tab が schema のキーワードと一致",
+              spec["tab"] == keyword_of.get(rtype),
+              f"gs={spec['tab']} schema={keyword_of.get(rtype)}")
+        # 接頭辞・接尾辞が付いた実シート名でも同じ種別へ解決できること。
+        decorated = f"著書、和文総説　{spec['tab']}, Japanese Reviews"
+        resolved = spec_for_sheet(decorated)
+        check(f"[{rtype}] 装飾されたタブ名でも解決できる",
+              resolved is not None and resolved.rtype == rtype,
+              f"name={decorated} resolved={resolved.rtype if resolved else None}")
+
+    # 名簿シートを record タブと誤認しないこと（.gs 側の部分一致でも同じ前提）。
+    from publication_summarizer.schema import ROSTER_KEYWORD  # noqa: PLC0415
+    check("名簿シートは record タブに解決されない", spec_for_sheet(ROSTER_KEYWORD) is None)
+
+
 def bulk_split_tests(check) -> None:
     """一括貼り付けの区分 preset が、フォームの選択肢と矛盾しないことを検証。
 
@@ -136,6 +165,7 @@ def _main() -> None:
         pass
 
     form_field_tests(check)
+    sheet_keyword_tests(check)
     bulk_split_tests(check)
     template_header_tests(check)
     print(f"\nRESULT: {'OK' if not failures else str(len(failures)) + ' failed'}")

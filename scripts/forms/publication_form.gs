@@ -493,6 +493,57 @@ function routeBulk_(byId, map, reporter) {
   Logger.log("[routeBulk] " + picked.label + " を " + n + " 件追記しました。");
 }
 
+/** スプレッドシートの全タブ名。 */
+function sheetNames_(ss) {
+  return ss.getSheets().map(function (s) { return s.getName(); });
+}
+
+/**
+ * 種別に対応する Canonical タブを解決する。
+ *
+ * 実シート名には「著書、和文総説　Books, Japanese Reviews」のように接頭辞が付くため、
+ * 完全一致だけで探すと見つからず、送信が黙って捨てられる。Python 側（schema.spec_for_sheet）は
+ * 元々キーワードの部分一致で解決しているので、同じ規則に揃える。
+ * 完全一致を優先し、無ければタブ名を含む最初のシートを返す（大小文字は無視）。
+ */
+function sheetForType_(ss, type) {
+  var tab = FIELD_MAP[type].tab;
+  var exact = ss.getSheetByName(tab);
+  if (exact) return exact;
+  var key = tab.toLowerCase();
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].getName().toLowerCase().indexOf(key) >= 0) return sheets[i];
+  }
+  return null;
+}
+
+/**
+ * 手動実行用の診断: Canonical の実タブ名と、各種別がどのタブへ解決されるかをログに出す。
+ * 「フォームから送ったのにシートに来ない」ときは、まずこれで解決先を確認する。
+ */
+function checkCanonicalTabs() {
+  var ss = SpreadsheetApp.openById(CANONICAL_SHEET_ID);
+  Logger.log("Canonical: " + ss.getName());
+  Logger.log("実際のタブ: " + sheetNames_(ss).join(" / "));
+  var missing = 0;
+  TYPE_ORDER.forEach(function (type) {
+    var tab = FIELD_MAP[type].tab;
+    var sh = sheetForType_(ss, type);
+    if (sh) {
+      var how = (sh.getName() === tab) ? "完全一致" : "部分一致";
+      Logger.log("  [OK] " + type + "（" + tab + "） → 「" + sh.getName() + "」" + how);
+    } else {
+      missing++;
+      Logger.log("  [NG] " + type + "（" + tab + "） → 解決できません");
+    }
+  });
+  Logger.log(missing ? ("→ " + missing + " 種別が解決できません。タブ名に「"
+      + TYPE_ORDER.map(function (t) { return FIELD_MAP[t].tab; }).join("」「")
+      + "」のいずれかを含めてください。")
+    : "→ 全種別が解決できます。");
+}
+
 /**
  * 1 件を Canonical の該当タブへ追記する（DOI補完・重複フラグ・採番・status=未確認）。
  * values は論理フィールド（_ja/_en）か base 名（title 等）でよい。base は言語で振り分ける。
@@ -500,9 +551,10 @@ function routeBulk_(byId, map, reporter) {
 function appendOne_(ss, type, values, reporter, source) {
   ensureBilingualValues_(values);
   var spec = FIELD_MAP[type];
-  var sheet = ss.getSheetByName(spec.tab);
+  var sheet = sheetForType_(ss, type);
   if (!sheet) {
-    Logger.log("[appendOne] タブが見つかりません: " + spec.tab);
+    Logger.log("[appendOne] タブが見つかりません: " + spec.tab
+      + "（実際のタブ: " + sheetNames_(ss).join(" / ") + "）");
     return;
   }
 

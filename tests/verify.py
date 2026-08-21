@@ -49,7 +49,7 @@ from publication_summarizer.i18n import rt_label, tr  # noqa: E402
 from publication_summarizer.roster import Member, split_authors  # noqa: E402
 from publication_summarizer.schema import BILINGUAL_FIELDS, display_fields  # noqa: E402
 from tests.test_form_fields import (  # noqa: E402
-    bulk_split_tests, form_field_tests, template_header_tests)
+    bulk_split_tests, form_field_tests, sheet_keyword_tests, template_header_tests)
 
 PASS, FAIL = 0, 0
 
@@ -505,6 +505,7 @@ def main() -> None:
     unit_tests()
     author_style_tests()
     form_field_tests(check)
+    sheet_keyword_tests(check)
     bulk_split_tests(check)
     template_header_tests(check)
     v2_tests()
