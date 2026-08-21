@@ -415,11 +415,16 @@ def llm_parse_tests() -> None:
     check("空文字 doi は脱落", "doi" not in recs[0])
     check("著者のみの件を採用", recs[1].get("authors") == "Hayashi N")
 
+    print("[llm] 接続先の既定値（GitHub Models は 2026-07-30 retirement 済み）")
+    check("base_url が OpenAI", lp.DEFAULT_BASE_URL == "https://api.openai.com/v1", lp.DEFAULT_BASE_URL)
+    check("モデルIDに openai/ 接頭辞が無い", not lp.DEFAULT_MODEL.startswith("openai/"), lp.DEFAULT_MODEL)
+
     print("[llm] llm_enabled / トークン未設定時のフォールバック")
-    check("トークン有→enabled", lp.llm_enabled("ghp_dummy"))
+    check("トークン有→enabled", lp.llm_enabled("sk-dummy"))
     check("トークン無→disabled", not lp.llm_enabled(""))
     raised = False
     try:
+        # token="" は明示指定。環境変数 OPENAI_API_KEY があっても拾わない（＝この検証は環境非依存）。
         lp.parse_records_llm("any text", "paper", token="")
     except lp.LLMParseError:
         raised = True

@@ -32,14 +32,15 @@ var META_FIELDS = ["record_id", "status", "submitter", "source", "created_at", "
 var APP_STATUS_NEW = "未確認"; // 取込直後の status。確認後にキュレーターが「確認済」へ。
 var SOURCE_LABEL = "form";
 
-// 一括貼り付けの LLM 構造化（任意）。GitHub Models（OpenAI 互換・無料枠）を使う。
-// トークンはコードに直書きせず、プロジェクトの設定 → スクリプト プロパティに
-// キー名「GITHUB_MODELS_TOKEN」で PAT（models:read 権限）を登録する（手順は docs/google-forms.md）。
+// 一括貼り付けの LLM 構造化（任意）。OpenAI API を使う。
+// API キーはコードに直書きせず、プロジェクトの設定 → スクリプト プロパティに
+// キー名「OPENAI_API_KEY」で登録する（手順は docs/google-forms.md）。
 // 未登録なら従来のヒューリスティック解析にフォールバックする。
-var LLM_BASE_URL = "https://models.github.ai/inference";
+// 旧基盤の GitHub Models は 2026-07-30 に retirement 済みのため使用不可。
+var LLM_BASE_URL = "https://api.openai.com/v1";
 
-var LLM_MODEL = "openai/gpt-4.1-mini";
-var LLM_TOKEN_PROP = "GITHUB_MODELS_TOKEN";
+var LLM_MODEL = "gpt-4.1-mini";
+var LLM_TOKEN_PROP = "OPENAI_API_KEY";
 
 /**
  * 種別ごとの設問定義。
@@ -640,7 +641,7 @@ function testLlmToken() {
       + " が JSON モード非対応の可能性。parseRecordsLlm_ の response_format を外すか"
       + " JSON モード対応モデルへ LLM_MODEL を変更してください。");
   } else {
-    Logger.log("→ どちらも失敗。401=PAT の models:read 権限無効 / 404=モデルID違い。");
+    Logger.log("→ どちらも失敗。401=API キーが無効 / 429=残高不足かレート制限 / 404=モデルID違い。");
   }
 }
 

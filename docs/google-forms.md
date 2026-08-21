@@ -46,18 +46,18 @@
 
 #### 一括貼り付けを LLM で自動構造化する（任意・精度向上）
 
-トークンを 1 つ登録しておくと、**「まとめて貼り付け」送信時に自動で GitHub Models（OpenAI 互換・無料枠）が解析**し、崩れた表記でも取りこぼしを減らせます。設定しなければ従来のヒューリスティック解析のまま動きます（後方互換）。
+API キーを 1 つ登録しておくと、**「まとめて貼り付け」送信時に自動で OpenAI（`gpt-4.1-mini`）が解析**し、崩れた表記でも取りこぼしを減らせます。設定しなければ従来のヒューリスティック解析のまま動きます（後方互換）。
 
-1. GitHub で **Personal Access Token（fine-grained）** を発行：Settings → Developer settings → Fine-grained tokens → **Account permissions の「Models」を Read-only** にして生成。
-2. フォーム用の Apps Script プロジェクトを開き、**⚙ プロジェクトの設定 → スクリプト プロパティ** で、キー `GITHUB_MODELS_TOKEN`・値に発行した PAT を追加して保存。
+1. [OpenAI Platform](https://platform.openai.com/api-keys) で **API キー** を発行し、**Billing で残高をチャージ**（従量課金。少額で足ります。目安は下記）。
+2. フォーム用の Apps Script プロジェクトを開き、**⚙ プロジェクトの設定 → スクリプト プロパティ** で、キー `OPENAI_API_KEY`・値に発行したキーを追加して保存。
 3. 以降、メンバーの「まとめて貼り付け」送信は自動で LLM 構造化される（`source` 列が `paste-llm`）。
 
 - **DOI は LLM に生成させません**（本文に明記がある時だけ採用）。DOI/英語情報の確定は従来どおり CrossRef が補完します。
-- **失敗時（トークン無・API/JSON エラー）は従来解析へ自動フォールバック**するので、送信が失敗することはありません。
-- レート制限はトークン所有者（あなた）の無料枠を消費します（目安: 150 req/日）。1 送信＝1 リクエストです。
-- **プライバシー**：貼り付け本文が GitHub Models（外部）へ送信されます。`source=paste-llm` の行は LLM 解析由来、`paste-form` は従来解析由来として見分けられます。
+- **失敗時（キー無・API/JSON エラー）は従来解析へ自動フォールバック**するので、送信が失敗することはありません。
+- **コスト**：1 送信＝1 リクエスト（長文は自動チャンク分割）。`gpt-4.1-mini` は $0.40/M(入力)・$1.60/M(出力) で、1 リクエストあたり約 0.5 セント。ラボ規模（年 200〜1,000 送信）なら **年 1〜5 ドル程度**です。請求はキー所有者（あなた）に発生します。
+- **プライバシー**：貼り付け本文が OpenAI（外部）へ送信されます。API 経由の入出力は既定では学習に使われません（Platform の data sharing にオプトインした場合を除く）。`source=paste-llm` の行は LLM 解析由来、`paste-form` は従来解析由来として見分けられます。
 
-> CLI（`scripts/ingest_paste.py --llm`）でも同じ LLM 構造化ができます（`GITHUB_TOKEN` を環境変数に設定）。**メンバー配布にはこのフォームの貼り付けが最も簡単**です。
+> CLI（`scripts/ingest_paste.py --llm`）でも同じ LLM 構造化ができます（`OPENAI_API_KEY` を環境変数に設定）。**メンバー配布にはこのフォームの貼り付けが最も簡単**です。
 
 ##### LLM が使われていないときの切り分け
 
@@ -66,28 +66,31 @@
 1. **疎通・トークン**：Apps Script エディタで関数 `testLlmToken` を選び「実行」→「実行ログ」を確認。本番と同じ JSON モード（`response_format`）付きと、それを外した素の呼び出しの両方を試し、どこで落ちるかをログが指し示します。
    - 両方 `HTTP 200` → 疎通は正常。原因は 2. か 3.
    - JSON モードだけ失敗 → `LLM_MODEL` が JSON モード非対応。モデルを変えるか `parseRecordsLlm_` の `response_format` を外す
-   - `HTTP 401` → PAT に **Models: Read-only** 権限が無い／失効
+   - `HTTP 401` → API キーが無効／失効（再発行する）
+   - `HTTP 429` → 残高不足かレート制限（Billing で残高を確認する）
    - `HTTP 404` → `LLM_MODEL` のモデル ID 違い
-   - 「登録: なし」 → スクリプト プロパティ `GITHUB_MODELS_TOKEN` が未登録（手順 2 をやり直す）
+   - 「登録: なし」 → スクリプト プロパティ `OPENAI_API_KEY` が未登録（手順 2 をやり直す）
 2. **経路**：LLM を通るのは**「まとめて貼り付け」を選んだ送信だけ**です。通常の 1 件ずつの入力は設計上 LLM を使いません（`source` は `form`）。
 3. **反映漏れ**：リポジトリの `scripts/forms/publication_form.gs` を更新しても、**Apps Script プロジェクトへ貼り直すまで本番には反映されません**。LLM 機能より前のコードが動いていないか確認してください。
 
-#### CLI で精度を上げる：LLM 構造化（`--llm`、GitHub Models）
+#### CLI で精度を上げる：LLM 構造化（`--llm`、OpenAI）
 
-貼り付けテキストの解析は通常ヒューリスティック（末尾の日付で区切る等）ですが、researchmap 以外の崩れた表記では取りこぼしが出ます。**`--llm` を付けると GitHub Models（OpenAI 互換・無料枠）でテキストを構造化抽出**し、手直しを減らせます。
+貼り付けテキストの解析は通常ヒューリスティック（末尾の日付で区切る等）ですが、researchmap 以外の崩れた表記では取りこぼしが出ます。**`--llm` を付けると OpenAI（`gpt-4.1-mini`）でテキストを構造化抽出**し、手直しを減らせます。
 
 ```powershell
-# 1) GitHub の Personal Access Token (fine-grained) を models:read 権限で発行し、環境変数に設定
-$env:GITHUB_TOKEN = "github_pat_xxx"
+# 0) 初回のみ: 任意依存の openai を導入
+pip install openai
+# 1) OpenAI Platform で API キーを発行し、環境変数に設定
+$env:OPENAI_API_KEY = "sk-xxx"
 # 2) --llm を付けて取り込み（失敗時は自動で従来解析にフォールバック）
-.\.venv\Scripts\python.exe scripts\ingest_paste.py --type paper --src papers.txt --llm --append canonical.xlsx
-#    別モデルを使う場合: --model openai/gpt-4o
+python scripts\ingest_paste.py --type paper --src papers.txt --llm --append canonical.xlsx
+#    別モデルを使う場合: --model gpt-4.1
 ```
 
 - **DOI は LLM に作らせません**（捏造防止）。DOI は本文に書かれている時だけ拾い、確定・補完は CrossRef（フォーム送信側の自動補完／キュレーターメニュー）に委ねます。
-- **トークン未設定・`openai` 未導入・API/JSON エラー時は、警告のうえ従来のヒューリスティック解析へ自動フォールバック**します（`--llm` を付けても失敗で止まりません）。`openai` は `requirements.txt` の任意依存です。
-- **無料枠にレート制限**があります（low-tier の目安: 15 req/分・150 req/日・入力 ~8000 トークン）。本ツールは 1 回の貼り付けを 1 リクエストにまとめ、長文は自動でチャンク分割します。
-- **プライバシー注意**：`--llm` を使うと貼り付け本文が GitHub Models（外部サービス）へ送信されます。機微な情報を含む場合は使用可否を確認してください。将来ローカル LLM へ切り替える場合も、`--model` と接続先（OpenAI 互換）の差し替えだけで対応できる設計です。
+- **キー未設定・`openai` 未導入・API/JSON エラー時は、警告のうえ従来のヒューリスティック解析へ自動フォールバック**します（`--llm` を付けても失敗で止まりません）。`openai` は `requirements.txt` の任意依存です。
+- **コスト**は従量課金で、1 回の貼り付けあたり約 0.5 セント。長文は自動でチャンク分割します（1 チャンク = 40 行）。
+- **プライバシー注意**：`--llm` を使うと貼り付け本文が OpenAI（外部サービス）へ送信されます。機微な情報を含む場合は使用可否を確認してください。接続先は `DEFAULT_BASE_URL` と `--model` の差し替えだけで、OpenAI 互換の別サービスやローカル LLM へ移行できます。
 
 > **設計方針（DOI を必須にしない）**：論文以外（発表・受賞・著書・アウトリーチ・広報）に DOI は無く、和文誌・和書は DOI 解決が弱いため、全項目を手入力で受けます。DOI は論文・著書の **任意項目**（形式検証つき）に留めます。
 
