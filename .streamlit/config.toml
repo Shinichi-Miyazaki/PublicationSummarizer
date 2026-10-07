@@ -4,3 +4,12 @@
 # それらのキーボードショートカット（"C" でキャッシュ消去の確認ダイアログ等）が無効になる。
 # キャッシュ更新はサイドバーの「🔄 再読み込み（キャッシュ更新）」ボタンで行う運用。
 toolbarMode = "viewer"
+
+[theme]
+# 落ち着いたインディゴ系アクセント＋ニュートラルグレーのシンプル配色。
+base = "light"
+primaryColor = "#5B5FEF"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F6F7FB"
+textColor = "#1F2430"
+font = "sans serif"

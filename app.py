@@ -38,6 +38,31 @@ from publication_summarizer.schema import SHEET_SPECS, display_fields
 
 st.set_page_config(page_title="研究業績サマライザー / Publication Summarizer", layout="wide")
 
+CUSTOM_CSS = """
+<style>
+.block-container {padding-top: 2.5rem; max-width: 1100px;}
+h1 {font-weight: 700; letter-spacing: -0.01em;}
+h3 {font-weight: 600; margin-top: 1.8rem;}
+[data-testid="stCaptionContainer"] {color: #6B7280;}
+div[data-testid="stExpander"] {
+    border: 1px solid #E5E7EB;
+    border-radius: 10px;
+    background-color: #FAFAFC;
+}
+div[data-testid="stExpander"] summary {font-weight: 500;}
+div[data-testid="stMarkdownContainer"] code {
+    background-color: #F1F2F8;
+    border-radius: 4px;
+}
+hr {margin: 2rem 0;}
+[data-testid="stSidebar"] {border-right: 1px solid #E5E7EB;}
+button[kind="primary"], button[kind="secondary"] {
+    border-radius: 8px;
+}
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
 NUMERIC_BY_TYPE = {s.rtype: s.numeric_fields for s in SHEET_SPECS}
 # 書式凡例・装飾対象は base 名に集約（二ヶ国語ペア _ja/_en は {title} 等として解決）。
 COLS_BY_TYPE = {s.rtype: display_fields(s.rtype) for s in SHEET_SPECS}
