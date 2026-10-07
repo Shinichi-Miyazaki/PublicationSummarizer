@@ -41,6 +41,77 @@ def load_field_map() -> dict:
     return json.loads(m.group(1))
 
 
+def load_bulk_splits() -> dict:
+    """.gs から BULK_SPLITS（strict JSON）を抽出して dict で返す。"""
+    text = _GS_PATH.read_text(encoding="utf-8")
+    m = re.search(r"// BULK_SPLITS_JSON_BEGIN\s*var BULK_SPLITS\s*=\s*(\{.*?\})\s*;\s*// BULK_SPLITS_JSON_END",
+                  text, re.DOTALL)
+    if not m:
+        raise ValueError("publication_form.gs から BULK_SPLITS ブロックを抽出できませんでした。")
+    return json.loads(m.group(1))
+
+
+def sheet_keyword_tests(check) -> None:
+    """.gs のタブ名が、Python 側と同じ「キーワード部分一致」で実シートに解決できることを検証。
+
+    実シート名は「著書、和文総説　Books, Japanese Reviews」のように接頭辞が付く。Python の
+    schema.spec_for_sheet は部分一致で解決するが、.gs が完全一致で探すと送信が黙って捨てられる
+    （原著だけ通り、著書が来ない）。両者のキーワードが一致していることを保証する。
+    """
+    print("[sheet] .gs のタブ名 と schema のシート判定キーワードの一致")
+    from publication_summarizer.schema import SHEET_SPECS, spec_for_sheet  # noqa: PLC0415
+
+    field_map = load_field_map()
+    keyword_of = {spec.rtype: spec.keyword for spec in SHEET_SPECS}
+
+    for rtype, spec in field_map.items():
+        check(f"[{rtype}] .gs の tab が schema のキーワードと一致",
+              spec["tab"] == keyword_of.get(rtype),
+              f"gs={spec['tab']} schema={keyword_of.get(rtype)}")
+        # 接頭辞・接尾辞が付いた実シート名でも同じ種別へ解決できること。
+        decorated = f"著書、和文総説　{spec['tab']}, Japanese Reviews"
+        resolved = spec_for_sheet(decorated)
+        check(f"[{rtype}] 装飾されたタブ名でも解決できる",
+              resolved is not None and resolved.rtype == rtype,
+              f"name={decorated} resolved={resolved.rtype if resolved else None}")
+
+    # 名簿シートを record タブと誤認しないこと（.gs 側の部分一致でも同じ前提）。
+    from publication_summarizer.schema import ROSTER_KEYWORD  # noqa: PLC0415
+    check("名簿シートは record タブに解決されない", spec_for_sheet(ROSTER_KEYWORD) is None)
+
+
+def bulk_split_tests(check) -> None:
+    """一括貼り付けの区分 preset が、フォームの選択肢と矛盾しないことを検証。
+
+    preset は解析結果へ無条件に書き込まれるため、フォームの radio 選択肢に無い値を入れると
+    1 件ずつ入力した行と表記が揃わず、集計・フィルタで別物として扱われてしまう。
+    """
+    print("[bulk] 一括貼り付けの区分 preset と FIELD_MAP 選択肢の一致")
+    field_map = load_field_map()
+    splits = load_bulk_splits()
+
+    labels: list[str] = []
+    for rtype, entries in splits.items():
+        check(f"[{rtype}] BULK_SPLITS の種別が FIELD_MAP に存在", rtype in field_map)
+        choices_of = {q["field"]: q.get("choices") for q in field_map[rtype]["questions"]}
+        for entry in entries:
+            labels.append(entry["label"])
+            for field, value in entry["preset"].items():
+                check(f"[{rtype}] preset の {field} が設問に存在", field in choices_of,
+                      f"fields={sorted(choices_of)}")
+                check(f"[{rtype}] 『{value}』が {field} の選択肢にある",
+                      value in (choices_of.get(field) or []),
+                      f"choices={choices_of.get(field)}")
+
+    # 一括リストのラベルは重複不可（bulkChoiceOf_ がラベルで種別・preset を引くため）。
+    all_labels = labels + [
+        spec["label"] + " / " + spec["label_en"]
+        for rtype, spec in field_map.items() if rtype not in splits
+    ]
+    check("一括リストのラベルが一意", len(all_labels) == len(set(all_labels)),
+          f"labels={all_labels}")
+
+
 def form_field_tests(check) -> None:
     """verify.py の check(name, cond, detail) を使って一致を検証する。"""
     print("[form] Apps Script FIELD_MAP と Canonical スキーマの一致")
@@ -94,6 +165,8 @@ def _main() -> None:
         pass
 
     form_field_tests(check)
+    sheet_keyword_tests(check)
+    bulk_split_tests(check)
     template_header_tests(check)
     print(f"\nRESULT: {'OK' if not failures else str(len(failures)) + ' failed'}")
     sys.exit(1 if failures else 0)

@@ -22,11 +22,54 @@ var APP_STATUS_NEW = "未確認";
 // 編集をロックするメタ列（ヘッダ名）。publication_form.gs の META_FIELDS と一致。
 var META_FIELDS_LOCK = ["record_id", "status", "submitter", "source", "created_at", "note"];
 
+// 保護範囲（ヘッダ・メタ列）も編集できる管理者（チェック担当）。オーナーは自動で含まれる。
+// チェック担当を複数名にする場合は、ここにメールアドレスを追記する（要・シートの編集権共有）。
+var ADMIN_EDITORS = [];  // 例: ["checker@example.com"]
+
 // タブ名 → 種別（DOI 補完の対象判定に使用）。publication_form.gs と一致。
 var TAB_TYPE = {
   "Original Papers": "paper", "Books": "book", "presentations": "presentation",
   "Awards": "award", "Outreach": "outreach", "Publicity": "publicity"
 };
+
+/**
+ * シートの種別を返す（record タブでなければ null）。
+ *
+ * 実シート名には「著書、和文総説　Books, Japanese Reviews」のように接頭辞が付くため、
+ * TAB_TYPE の完全一致では取りこぼす。Python 側（schema.spec_for_sheet）と同じく、
+ * タブ名キーワードを含むかで判定する（完全一致を優先）。
+ */
+function typeOfSheet_(sh) {
+  var name = String(sh.getName());
+  if (TAB_TYPE[name]) return TAB_TYPE[name];
+  var lower = name.toLowerCase();
+  var keys = Object.keys(TAB_TYPE);
+  for (var i = 0; i < keys.length; i++) {
+    if (lower.indexOf(keys[i].toLowerCase()) >= 0) return TAB_TYPE[keys[i]];
+  }
+  return null;
+}
+
+/**
+ * Canonical の record タブを TAB_TYPE の並び順で列挙する（1 種別につき 1 タブ）。
+ * 同じ種別に複数該当した場合（「Books」と「Books backup」等）は完全一致を優先し、
+ * 無ければ最初に見つかった 1 枚だけを対象にする（控えタブを二重に処理しない）。
+ */
+function recordSheets_(ss) {
+  var sheets = ss.getSheets();
+  var out = [];
+  Object.keys(TAB_TYPE).forEach(function (tab) {
+    var type = TAB_TYPE[tab], exact = null, partial = null;
+    for (var i = 0; i < sheets.length; i++) {
+      if (typeOfSheet_(sheets[i]) !== type) continue;
+      if (sheets[i].getName() === tab) { exact = sheets[i]; break; }
+      if (!partial) partial = sheets[i];
+    }
+    var sh = exact || partial;
+    if (sh) out.push(sh);
+  });
+  return out;
+}
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu("業績DB")
@@ -64,7 +107,7 @@ function setStatusSelected_(status) {
  */
 function enrichSelected() {
   var sh = SpreadsheetApp.getActiveSheet();
-  var type = TAB_TYPE[sh.getName()];
+  var type = typeOfSheet_(sh);
   if (type !== "paper" && type !== "book") { toast_("自動補完は論文・書籍タブのみ対応です"); return; }
   var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   var col = {};
@@ -216,7 +259,8 @@ function recheckSheet_(sh) {
   for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
   if (col.note == null) return -1;
   if (last < 2) return 0;
-  var titleOnly = (TAB_TYPE[sh.getName()] === "paper" || TAB_TYPE[sh.getName()] === "book");
+  var type = typeOfSheet_(sh);
+  var titleOnly = (type === "paper" || type === "book");
   var data = sh.getRange(2, 1, last - 1, header.length).getValues();
   var seen = {}, flagged = 0;  // key -> 既存の record_id
   for (var r = 0; r < data.length; r++) {
@@ -339,7 +383,7 @@ function setNoteTag_(note, key, value) {
 
 /** 1 タブの欠損を再判定し note の missing= を更新。欠損のある行数を返す（note 列なしは -1）。 */
 function recheckMissingSheet_(sh) {
-  var type = TAB_TYPE[sh.getName()];
+  var type = typeOfSheet_(sh);
   var last = sh.getLastRow();
   var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   var col = {};
@@ -372,9 +416,8 @@ function runAllChecks() {
   var ss = SpreadsheetApp.getActive();
   var report = [];  // [タブ, record_id, 種類, 詳細, タイトル]
   var dupTotal = 0, missTotal = 0, idDupTotal = 0, noNote = 0;
-  Object.keys(TAB_TYPE).forEach(function (name) {
-    var sh = ss.getSheetByName(name);
-    if (!sh) return;
+  recordSheets_(ss).forEach(function (sh) {
+    var name = sh.getName();
     if (recheckSheet_(sh) === -1) { noNote++; return; }  // note 列なしはスキップ
     recheckMissingSheet_(sh);
     applyHighlighting_(sh);
@@ -395,7 +438,7 @@ function runAllChecks() {
         idCounts[rid] = (idCounts[rid] || 0) + 1;
       }
     });
-    var typeLabel = TYPE_LABELS[TAB_TYPE[name]] || name;
+    var typeLabel = TYPE_LABELS[typeOfSheet_(sh)] || name;
     data.forEach(function (row) {
       var rid = String(row[col.record_id] || "").trim();
       if (!rid) return;
@@ -520,9 +563,8 @@ function setupMemberEditing() {
 function protectMetaAllTabs() {
   var ss = SpreadsheetApp.getActive();
   var me = Session.getEffectiveUser();
-  Object.keys(TAB_TYPE).forEach(function (name) {
-    var sh = ss.getSheetByName(name);
-    if (sh) protectSheetMeta_(sh, me);
+  recordSheets_(ss).forEach(function (sh) {
+    protectSheetMeta_(sh, me);
   });
 }
 
@@ -555,6 +597,10 @@ function protectRange_(range, me) {
   p.removeEditors(p.getEditors());
   if (p.canDomainEdit()) p.setDomainEdition(false);
   p.addEditor(me);
+  // 管理者（チェック担当）も保護範囲を編集できるようにする。未共有のアドレスは無視。
+  ADMIN_EDITORS.forEach(function (email) {
+    try { p.addEditor(email); } catch (e) {}
+  });
 }
 
 /** onEdit トリガ（onEditRevert）を重複なく設置する。 */
@@ -574,7 +620,7 @@ function installEditRevertTrigger_() {
 function onEditRevert(e) {
   if (!e || !e.range) return;
   var sh = e.range.getSheet();
-  if (!TAB_TYPE[sh.getName()]) return;          // record タブのみ
+  if (!typeOfSheet_(sh)) return;                // record タブのみ
   var lastCol = sh.getLastColumn();
   var header = sh.getRange(1, 1, 1, lastCol).getValues()[0];
   var col = {};                                  // ヘッダ名 → 1-based 列番号
