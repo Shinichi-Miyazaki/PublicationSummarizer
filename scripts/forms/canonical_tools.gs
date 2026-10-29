@@ -13,6 +13,9 @@
  *   - 選択行を補完                        … 論文=DOI/タイトル検索→CrossRef、書籍=ISBN→OpenLibrary（空欄のみ）
  *   - 選択行をDOIから補完（上書き）          … DOI は変えず、date・英語タイトル・誌名・巻号頁を CrossRef の値へ強制上書き（誤入力の修正用）
  *   - 巻号頁の日付化を修復                  … 全論文・著書行で日付に化けた巻・号・ページを DOI から引き直す
+ *   - 開催地の候補を LLM で調べる            … 国名だけの発表を (学会名, 年) ごとに Web 検索付き LLM で調べ「開催地候補」シートへ
+ *   - 開催地候補を反映                      … 候補シートでチェックした都市名を、同じ学会・年の発表行へ書き込む
+ *   - 選択行の開催地を同じ学会へ反映          … 手で入れた都市名を、同じ学会・年で国名だけの他の行へ広げる
  *   - メンバー編集を有効化                  … 列・メタ保護＋編集で未確認に戻す（メンバー自己修正）
  *   - メンバー編集を無効化                  … 全列をオーナーのみ編集可に戻す（編集トリガーも停止）
  *   - 週次バックアップを設定                … 毎週月曜 AM3 時に Drive の backups フォルダへコピー保存
@@ -85,6 +88,10 @@ function onOpen() {
     .addItem("選択行をDOIから補完（上書き）", "forceEnrichSelectedFromDoi")
     .addItem("巻号頁の日付化を修復（DOI から再取得）", "repairDateCorruptedNumbers")
     .addItem("選択行を「重複ではない」に確定", "markNotDuplicate")
+    .addSeparator()
+    .addItem("開催地の候補を LLM で調べる（発表・国名のみの行）", "suggestVenues")
+    .addItem("開催地候補を反映", "applyVenueCandidates")
+    .addItem("選択行の開催地を同じ学会へ反映", "propagateSelectedVenue")
     .addSeparator()
     .addItem("メンバー編集を有効化（保護＋編集で未確認へ）", "setupMemberEditing")
     .addItem("メンバー編集を無効化（全列オーナーのみへ）", "disableMemberEditing")
@@ -900,6 +907,229 @@ function backupCanonical() {
 function getOrCreateBackupFolder_(parent) {
   var it = parent.getFoldersByName(BACKUP_FOLDER_NAME);
   return it.hasNext() ? it.next() : parent.createFolder(BACKUP_FOLDER_NAME);
+}
+
+// ── 発表の開催地補完（国名だけ → 都市名） ──────────────────────────
+// 推測値を DB へ直接入れないよう「開催地候補」シートを経由する:
+//   1) 開催地の候補を LLM で調べる … (学会名, 年) ごとに Web 検索付き LLM で都市名と出典 URL を候補シートへ
+//   2) 候補シートでキュレーターが確認・修正し「反映する」にチェック
+//   3) 開催地候補を反映 … チェックした候補を同じ (学会名, 年) の発表行の venue へ書き込む
+// 手で調べた場合は「選択行の開催地を同じ学会へ反映」で、1 行の値を同じ学会の他の行へ広げられる。
+
+// LLM 接続設定（publication_form.gs と同じ）。API キーはこのスクリプトのプロパティ OPENAI_API_KEY に設定する。
+var LLM_BASE_URL = "https://api.openai.com/v1";
+var LLM_MODEL = "gpt-4.1-mini";
+var LLM_TOKEN_PROP = "OPENAI_API_KEY";
+var LLM_WEB_SEARCH_TOOL = "web_search";  // Responses API の Web 検索ツール種別
+
+var VENUE_CANDIDATE_SHEET = "開催地候補";
+var VENUE_CANDIDATE_HEADER = ["学会名", "年", "候補（開催地）", "出典URL", "対象件数", "状態", "反映する"];
+// 1 回の実行で調べる上限時間（Apps Script の 6 分制限の手前で止め、再実行で続きから調べる）。
+var VENUE_LOOKUP_BUDGET_MS = 4.5 * 60 * 1000;
+
+// 「詳しくする」対象とみなす国名だけの開催地（小文字で比較）。オンラインは対象外。
+var VENUE_COUNTRY_ONLY = [
+  "日本", "japan", "us", "usa", "u.s.a.", "united states", "アメリカ", "米国", "korea", "south korea", "韓国",
+  "china", "中国", "taiwan", "台湾", "singapore", "シンガポール", "switzerland", "スイス", "austria",
+  "オーストリア", "germany", "ドイツ", "france", "フランス", "uk", "united kingdom", "イギリス", "英国",
+  "canada", "カナダ", "australia", "オーストラリア", "italy", "イタリア", "spain", "スペイン"
+];
+
+/** venue が空か国名だけなら true（都市名を補う対象）。 */
+function venueNeedsDetail_(v) {
+  var s = String(v || "").trim().toLowerCase();
+  return !s || VENUE_COUNTRY_ONLY.indexOf(s) >= 0;
+}
+
+/** 発表行の (学会名, 年) キー。学会名か年が無ければ ""（まとめられないので対象外）。 */
+function venueKeyOf_(row, col) {
+  var conf = String((col.conference_ja != null && row[col.conference_ja]) ||
+                    (col.conference_en != null && row[col.conference_en]) || "").trim();
+  var d = col.date != null ? row[col.date] : "";
+  var m = (d instanceof Date) ? [null, String(d.getFullYear())] : String(d || "").match(/(\d{4})/);
+  return (conf && m) ? {key: conf + "|" + m[1], conf: conf, year: m[1]} : null;
+}
+
+function presentationSheet_(ss) {
+  var shs = recordSheets_(ss).filter(function (sh) { return typeOfSheet_(sh) === "presentation"; });
+  return shs.length ? shs[0] : null;
+}
+
+/** シート全体を読み、{data, col} を返す。 */
+function readSheet_(sh) {
+  var data = sh.getRange(1, 1, Math.max(sh.getLastRow(), 1), sh.getLastColumn()).getValues();
+  var col = {};
+  data[0].forEach(function (h, i) { col[String(h).trim()] = i; });
+  return {data: data, col: col};
+}
+
+function appendNote_(row, col, tag) {
+  if (col.note == null) return;
+  var note = String(row[col.note] || "");
+  if (note.indexOf(tag) < 0) row[col.note] = note ? note + "; " + tag : tag;
+}
+
+/** 候補シートを用意し（無ければ作成）、既存の候補を {key: rowIndex(1始まり)} で返す。 */
+function venueCandidateSheet_(ss) {
+  var sh = ss.getSheetByName(VENUE_CANDIDATE_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(VENUE_CANDIDATE_SHEET);
+    sh.getRange(1, 1, 1, VENUE_CANDIDATE_HEADER.length).setValues([VENUE_CANDIDATE_HEADER]).setFontWeight("bold");
+    sh.setFrozenRows(1);
+  }
+  var index = {};
+  var last = sh.getLastRow();
+  if (last >= 2) {
+    sh.getRange(2, 1, last - 1, 2).getValues().forEach(function (v, i) {
+      index[String(v[0]).trim() + "|" + String(v[1]).trim()] = i + 2;
+    });
+  }
+  return {sheet: sh, index: index};
+}
+
+/**
+ * Web 検索付き LLM で (学会名, 年) の開催都市を調べる。{city, url} を返す（見つからなければ city=""）。
+ * キー未設定・HTTP エラーは throw。
+ */
+function lookupVenueLlm_(conf, year) {
+  var token = String(PropertiesService.getScriptProperties().getProperty(LLM_TOKEN_PROP) || "").trim();
+  if (!token) throw new Error("スクリプト プロパティ " + LLM_TOKEN_PROP + " が未設定です");
+  var prompt =
+    "次の学術集会の開催都市を Web で調べてください。\n" +
+    "学会名: " + conf + "\n開催年: " + year + "\n" +
+    "規則:\n" +
+    "- 国内開催なら都市名のみを日本語で（例: 新潟、横浜、東京）。\n" +
+    "- 海外開催なら英語で「City, Country」（例: Washington DC, USA）。\n" +
+    "- 会場名・施設名は含めない。オンライン開催なら city は \"オンライン\"。\n" +
+    "- 学会名と開催年が一致する公式情報などの根拠ページが見つからなければ city は \"\"。推測しない。\n" +
+    '出力は JSON のみ: {"city": "...", "url": "根拠ページのURL"}';
+  var resp = UrlFetchApp.fetch(LLM_BASE_URL + "/responses", {
+    method: "post",
+    contentType: "application/json",
+    headers: {Authorization: "Bearer " + token},
+    muteHttpExceptions: true,
+    payload: JSON.stringify({model: LLM_MODEL, tools: [{type: LLM_WEB_SEARCH_TOOL}], input: prompt})
+  });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error("HTTP " + resp.getResponseCode() + ": " + resp.getContentText().slice(0, 200));
+  }
+  return parseVenueLlmResponse_(JSON.parse(resp.getContentText()));
+}
+
+/** Responses API の応答本文から {city, url} を取り出す（JSON が無ければ city=""）。 */
+function parseVenueLlmResponse_(body) {
+  var text = "";
+  (body.output || []).forEach(function (item) {
+    if (item.type !== "message") return;
+    (item.content || []).forEach(function (c) { if (c.type === "output_text") text += c.text; });
+  });
+  var m = text.match(/\{[\s\S]*\}/);
+  if (!m) return {city: "", url: ""};
+  try {
+    var j = JSON.parse(m[0]);
+    return {city: String(j.city || "").trim(), url: String(j.url || "").trim()};
+  } catch (err) {
+    return {city: "", url: ""};
+  }
+}
+
+/**
+ * 国名だけ（または空）の発表行を (学会名, 年) でまとめ、未調査のものだけ LLM で調べて候補シートへ書く。
+ * 調査済みのキーは再検索しない（時間切れで止まったら再実行すれば続きから）。
+ */
+function suggestVenues() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = presentationSheet_(ss);
+  if (!sh) { toast_("発表タブが見つかりません"); return; }
+  var s = readSheet_(sh);
+  if (s.col.venue == null) { toast_("発表タブに venue 列がありません"); return; }
+  var groups = {}, order = [];
+  for (var r = 1; r < s.data.length; r++) {
+    if (!venueNeedsDetail_(s.data[r][s.col.venue])) continue;
+    var k = venueKeyOf_(s.data[r], s.col);
+    if (!k) continue;
+    if (!groups[k.key]) { groups[k.key] = {conf: k.conf, year: k.year, n: 0}; order.push(k.key); }
+    groups[k.key].n++;
+  }
+  var cand = venueCandidateSheet_(ss);
+  var started = Date.now(), done = 0, found = 0, remaining = 0;
+  for (var i = 0; i < order.length; i++) {
+    var g = groups[order[i]];
+    var at = cand.index[order[i]];
+    if (at) { cand.sheet.getRange(at, 5).setValue(g.n); continue; }  // 調査済み → 件数だけ更新
+    if (Date.now() - started > VENUE_LOOKUP_BUDGET_MS) { remaining++; continue; }
+    var res;
+    try {
+      res = lookupVenueLlm_(g.conf, g.year);
+    } catch (err) {
+      toast_("LLM 呼び出しに失敗しました: " + err.message);
+      return;
+    }
+    cand.sheet.appendRow([g.conf, g.year, res.city, res.url, g.n, res.city ? "候補あり" : "見つからず", false]);
+    var row = cand.sheet.getLastRow();
+    cand.sheet.getRange(row, 1, 1, 2).setNumberFormat("@");
+    cand.sheet.getRange(row, 7).insertCheckboxes();
+    done++;
+    if (res.city) found++;
+  }
+  var msg = done + " 件を調べ、" + found + " 件で候補が見つかりました。「" + VENUE_CANDIDATE_SHEET +
+            "」で確認し、正しいものに「反映する」をチェックしてから「開催地候補を反映」を実行してください";
+  if (remaining) msg += "／時間切れで未調査 " + remaining + " 件（もう一度実行すると続きから調べます）";
+  toast_(msg);
+}
+
+/** 候補シートで「反映する」にチェックした候補を、同じ (学会名, 年) で国名だけの発表行の venue へ書き込む。 */
+function applyVenueCandidates() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = presentationSheet_(ss);
+  var csh = ss.getSheetByName(VENUE_CANDIDATE_SHEET);
+  if (!sh || !csh || csh.getLastRow() < 2) { toast_("反映できる候補がありません"); return; }
+  var cands = csh.getRange(2, 1, csh.getLastRow() - 1, VENUE_CANDIDATE_HEADER.length).getValues();
+  var chosen = {};
+  cands.forEach(function (c, i) {
+    var city = String(c[2] || "").trim();
+    if (c[6] === true && city) chosen[String(c[0]).trim() + "|" + String(c[1]).trim()] = {city: city, row: i + 2};
+  });
+  var n = fillVenues_(sh, function (key) { return chosen[key] ? chosen[key].city : ""; });
+  Object.keys(chosen).forEach(function (k) {
+    csh.getRange(chosen[k].row, 6, 1, 2).setValues([["反映済", false]]);
+  });
+  toast_(n + " 行の開催地を反映しました");
+}
+
+/** 選択行の venue（都市名入り）を、同じ (学会名, 年) で国名だけの他の発表行へ広げる。手で調べた値の一括反映用。 */
+function propagateSelectedVenue() {
+  var sh = SpreadsheetApp.getActiveSheet();
+  if (typeOfSheet_(sh) !== "presentation") { toast_("発表タブで実行してください"); return; }
+  var s = readSheet_(sh);
+  var src = {};
+  eachSelectedDataRow_(sh, function (r) {
+    var row = s.data[r - 1];
+    var v = String(row[s.col.venue] || "").trim();
+    var k = venueKeyOf_(row, s.col);
+    if (k && !venueNeedsDetail_(v)) src[k.key] = v;
+  });
+  if (!Object.keys(src).length) { toast_("選択行に学会名・年・都市名入りの開催地がありません"); return; }
+  var n = fillVenues_(sh, function (key) { return src[key] || ""; });
+  toast_(n + " 行へ開催地を反映しました");
+}
+
+/** cityOf(key) が値を返す (学会名, 年) の、国名だけの発表行の venue を埋める。埋めた行数を返す。 */
+function fillVenues_(sh, cityOf) {
+  var s = readSheet_(sh);
+  var n = 0;
+  for (var r = 1; r < s.data.length; r++) {
+    var row = s.data[r];
+    if (!venueNeedsDetail_(row[s.col.venue])) continue;
+    var k = venueKeyOf_(row, s.col);
+    var city = k ? cityOf(k.key) : "";
+    if (!city) continue;
+    row[s.col.venue] = city;
+    appendNote_(row, s.col, "venue-filled");
+    sh.getRange(r + 1, 1, 1, row.length).setValues([row]);
+    n++;
+  }
+  return n;
 }
 
 // ── 共通ヘルパ ───────────────────────────────────────────────
