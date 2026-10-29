@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import datetime
 import sys
 from pathlib import Path
+
+import pandas as pd
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -70,6 +73,8 @@ def unit_tests() -> None:
     check("871.0 -> 871", clean_number(871.0) == "871")
     check("range kept", clean_number("1002-1010") == "1002-1010")
     check("empty", clean_number(None) == "")
+    check("日付化した値は空に", clean_number(pd.Timestamp("2207-05-17")) == ""
+          and clean_number(datetime.datetime(1936, 8, 28)) == "")
 
     print("[unit] fiscal year")
     check("Apr -> same FY", _fiscal_year(_parse_date("2025/04/10")) == 2025)

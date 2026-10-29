@@ -12,6 +12,7 @@
  *   - ★ まとめて点検                      … date 列で並び替え → 全タブの重複・欠損を再判定し色分け＋「点検レポート」シートに一覧
  *   - 選択行を補完                        … 論文=DOI/タイトル検索→CrossRef、書籍=ISBN→OpenLibrary（空欄のみ）
  *   - 選択行をDOIから補完（上書き）          … DOI は変えず、date・英語タイトル・誌名・巻号頁を CrossRef の値へ強制上書き（誤入力の修正用）
+ *   - 巻号頁の日付化を修復                  … 全論文・著書行で日付に化けた巻・号・ページを DOI から引き直す
  *   - メンバー編集を有効化                  … 列・メタ保護＋編集で未確認に戻す（メンバー自己修正）
  *   - メンバー編集を無効化                  … 全列をオーナーのみ編集可に戻す（編集トリガーも停止）
  *   - 週次バックアップを設定                … 毎週月曜 AM3 時に Drive の backups フォルダへコピー保存
@@ -82,6 +83,7 @@ function onOpen() {
     .addItem("★ まとめて点検（重複・欠損・色分け → レポート）", "runAllChecks")
     .addItem("選択行を補完（DOI・タイトル・ISBN 自動）", "enrichSelected")
     .addItem("選択行をDOIから補完（上書き）", "forceEnrichSelectedFromDoi")
+    .addItem("巻号頁の日付化を修復（DOI から再取得）", "repairDateCorruptedNumbers")
     .addItem("選択行を「重複ではない」に確定", "markNotDuplicate")
     .addSeparator()
     .addItem("メンバー編集を有効化（保護＋編集で未確認へ）", "setupMemberEditing")
@@ -223,6 +225,52 @@ function forceFillRowFromCrossref_(row, col, type, msg) {
     forceSet("date", p[0] + "/" + pad(p[1] || 1) + "/" + pad(p[2] || 1));
   }
   return changed;
+}
+
+/**
+ * 論文・著書タブを全走査し、巻・号・ページのセルが日付に化けた行を DOI から CrossRef で引き直す。
+ * Sheets が「12-20」等を日付へ自動変換した既存データの修復用。直すのは日付になった項目だけ。
+ * DOI が無い・CrossRef に値が無い行は record_id をトーストで示し、手で直してもらう。
+ */
+function repairDateCorruptedNumbers() {
+  var ss = SpreadsheetApp.getActive();
+  var fixed = 0, unresolved = [];
+  recordSheets_(ss).forEach(function (sh) {
+    var type = typeOfSheet_(sh);
+    if (type !== "paper" && type !== "book") return;
+    var lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    var data = sh.getRange(1, 1, lastRow, sh.getLastColumn()).getValues();
+    var col = {};
+    data[0].forEach(function (h, i) { col[String(h).trim()] = i; });
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      var broken = TEXT_FORMAT_FIELDS.filter(function (name) {
+        return col[name] != null && row[col[name]] instanceof Date;
+      });
+      if (!broken.length) continue;
+      var id = col.record_id != null ? String(row[col.record_id]) : (sh.getName() + "!" + (r + 1));
+      var doi = col.doi != null ? String(row[col.doi] || "").trim() : "";
+      var msg = doi ? fetchCrossref_(doi) : null;
+      var fromCrossref = msg ? {volume: msg.volume || "", issue: msg.issue || "", pages: crossrefPages_(msg)} : {};
+      var ok = true;
+      broken.forEach(function (name) {
+        if (fromCrossref[name]) row[col[name]] = String(fromCrossref[name]);
+        else ok = false;
+      });
+      if (!ok) { unresolved.push(id); continue; }
+      if (col.note != null) {
+        var note = String(row[col.note] || "");
+        if (note.indexOf("crossref-fixdate") < 0) row[col.note] = note ? note + "; crossref-fixdate" : "crossref-fixdate";
+      }
+      setTextFormatForRow_(sh, r + 1, col);
+      sh.getRange(r + 1, 1, 1, row.length).setValues([row]);
+      fixed++;
+    }
+  });
+  var text = fixed + " 行の巻号頁を修復しました";
+  if (unresolved.length) text += "／自動で直せなかった行（手で修正）: " + unresolved.join(", ");
+  toast_(text);
 }
 
 /** タイトルを単語トークンへ分解（小文字化・記号→空白・CJK は1トークン）。 */

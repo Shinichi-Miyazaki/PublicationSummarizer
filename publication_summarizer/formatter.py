@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import datetime
 import math
 import re
 from collections.abc import Callable
@@ -32,8 +33,14 @@ def load_templates(path: Path | str = _TEMPLATES_PATH) -> dict:
 
 
 def clean_number(value) -> str:
-    """数値由来フィールドの末尾 ".0" を除去（"30.0"->"30"、範囲・文字列は維持）。"""
+    """数値由来フィールドの末尾 ".0" を除去（"30.0"->"30"、範囲・文字列は維持）。
+
+    日付型は、Sheets が「12-20」等を日付へ自動変換して壊れた値なので空にする
+    （偽の日付を出力しない。修復は Canonical の「巻号頁の日付化を修復」で行う）。
+    """
     if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    if isinstance(value, (datetime.date, pd.Timestamp)):
         return ""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
