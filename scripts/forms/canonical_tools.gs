@@ -9,9 +9,12 @@
  *
  * メニュー:
  *   - 選択行を承認(確認済) / 未確認に戻す  … status を切り替える
- *   - ★ まとめて点検                      … 全タブの重複・欠損を再判定し色分け＋「点検レポート」シートに一覧
- *   - 選択行を補完                        … 論文=DOI/タイトル検索→CrossRef、書籍=ISBN→OpenLibrary
+ *   - ★ まとめて点検                      … date 列で並び替え → 全タブの重複・欠損を再判定し色分け＋「点検レポート」シートに一覧
+ *   - 選択行を補完                        … 論文=DOI/タイトル検索→CrossRef、書籍=ISBN→OpenLibrary（空欄のみ）
+ *   - 選択行をDOIから補完（上書き）          … DOI は変えず、date・英語タイトル・誌名・巻号頁を CrossRef の値へ強制上書き（誤入力の修正用）
  *   - メンバー編集を有効化                  … 列・メタ保護＋編集で未確認に戻す（メンバー自己修正）
+ *   - メンバー編集を無効化                  … 全列をオーナーのみ編集可に戻す（編集トリガーも停止）
+ *   - 週次バックアップを設定                … 毎週月曜 AM3 時に Drive の backups フォルダへコピー保存
  *
  * 注意: 補完・承認は record タブ（Original Papers / presentations 等）で行を選択してから実行する。
  */
@@ -78,9 +81,13 @@ function onOpen() {
     .addSeparator()
     .addItem("★ まとめて点検（重複・欠損・色分け → レポート）", "runAllChecks")
     .addItem("選択行を補完（DOI・タイトル・ISBN 自動）", "enrichSelected")
+    .addItem("選択行をDOIから補完（上書き）", "forceEnrichSelectedFromDoi")
     .addItem("選択行を「重複ではない」に確定", "markNotDuplicate")
     .addSeparator()
     .addItem("メンバー編集を有効化（保護＋編集で未確認へ）", "setupMemberEditing")
+    .addItem("メンバー編集を無効化（全列オーナーのみへ）", "disableMemberEditing")
+    .addSeparator()
+    .addItem("週次バックアップを設定", "setupWeeklyBackup")
     .addToUi();
 }
 
@@ -116,7 +123,11 @@ function enrichSelected() {
   eachSelectedDataRow_(sh, function (r) {
     var rowRange = sh.getRange(r, 1, 1, header.length);
     var row = rowRange.getValues()[0];
-    if (enrichRow_(row, col, type)) { rowRange.setValues([row]); n++; }
+    if (enrichRow_(row, col, type)) {
+      setTextFormatForRow_(sh, r, col);
+      rowRange.setValues([row]);
+      n++;
+    }
   });
   toast_(n + " 行を補完しました");
 }
@@ -149,6 +160,67 @@ function enrichRow_(row, col, type) {
       var book = fetchBookByIsbn_(isbn);
       if (book && fillRowFromBook_(row, col, book)) { changed = true; addNote("openlibrary"); }
     }
+  }
+  return changed;
+}
+
+/**
+ * 選択行を DOI から CrossRef で引き直し、既存の値も含めて上書きする（論文・書籍のみ）。
+ * 「選択行を補完」は空欄だけを埋めるのに対し、こちらは誤入力の修正用に date・英語タイトル・
+ * 誌名・巻号ページを CrossRef の値へ強制的に置き換える。DOI は変更しない。確認ダイアログは出さない。
+ * DOI が空欄の行はスキップ（タイトル検索はしない）。
+ */
+function forceEnrichSelectedFromDoi() {
+  var sh = SpreadsheetApp.getActiveSheet();
+  var type = typeOfSheet_(sh);
+  if (type !== "paper" && type !== "book") { toast_("DOIからの上書き補完は論文・書籍タブのみ対応です"); return; }
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var col = {};
+  for (var i = 0; i < header.length; i++) col[String(header[i]).trim()] = i;
+  if (col.doi == null) { toast_("このタブに doi 列がありません"); return; }
+  var n = 0, skipped = 0, failed = 0;
+  eachSelectedDataRow_(sh, function (r) {
+    var rowRange = sh.getRange(r, 1, 1, header.length);
+    var row = rowRange.getValues()[0];
+    var doi = String(row[col.doi] || "").trim();
+    if (!doi) { skipped++; return; }
+    var msg = fetchCrossref_(doi);
+    if (!msg || !forceFillRowFromCrossref_(row, col, type, msg)) { failed++; return; }
+    if (col.note != null) {
+      var note = String(row[col.note] || "");
+      if (note.indexOf("crossref-force") < 0) row[col.note] = note ? note + "; crossref-force" : "crossref-force";
+    }
+    setTextFormatForRow_(sh, r, col);
+    rowRange.setValues([row]);
+    n++;
+  });
+  var msg = n + " 行を DOI から上書き補完しました";
+  if (skipped) msg += "／DOI 空欄 " + skipped + " 行はスキップ";
+  if (failed) msg += "／取得できず " + failed + " 行は変更なし";
+  toast_(msg);
+}
+
+/**
+ * CrossRef メッセージで row を上書きする（空欄かどうかを問わず、CrossRef が値を返した項目のみ）。
+ * fillRowFromCrossref_ と異なり既存値のチェックをしない。置き換えたら true。
+ */
+function forceFillRowFromCrossref_(row, col, type, msg) {
+  function first(a) { return (a && a.length) ? a[0] : ""; }
+  var changed = false;
+  function forceSet(name, v) {
+    if (v && col[name] != null) { row[col[name]] = v; changed = true; }
+  }
+  forceSet(type === "book" ? "book_title_en" : "title_en", first(msg.title));
+  forceSet("journal_en", first(msg["container-title"]));
+  forceSet("journal_abbr_en", first(msg["short-container-title"]));
+  forceSet("volume", msg.volume || "");
+  forceSet("issue", msg.issue || "");
+  forceSet("pages", crossrefPages_(msg));
+  var dp = msg["published-print"] || msg["published-online"] || msg["issued"];
+  if (dp && dp["date-parts"] && dp["date-parts"][0]) {
+    var p = dp["date-parts"][0];
+    var pad = function (n) { n = String(n); return n.length < 2 ? "0" + n : n; };
+    forceSet("date", p[0] + "/" + pad(p[1] || 1) + "/" + pad(p[2] || 1));
   }
   return changed;
 }
@@ -418,6 +490,7 @@ function runAllChecks() {
   var dupTotal = 0, missTotal = 0, idDupTotal = 0, noNote = 0;
   recordSheets_(ss).forEach(function (sh) {
     var name = sh.getName();
+    sortSheetByDate_(sh);
     if (recheckSheet_(sh) === -1) { noNote++; return; }  // note 列なしはスキップ
     recheckMissingSheet_(sh);
     applyHighlighting_(sh);
@@ -530,6 +603,63 @@ function applyHighlighting_(sh) {
   sh.setConditionalFormatRules(rules);
 }
 
+/**
+ * date セルを比較可能な数値キーへ変換（YYYYMMDD 相当）。空・不明は -1（実データより必ず小さく、末尾へ沈む）。
+ *
+ * 注意: Google Sheets は "2022/12/01" のような完全な日付を自動で Date 型（セル内部は日時シリアル値）
+ * に変換するが、"2020/7" のような年月だけの入力は変換できず文字列のまま残る。同じ date 列に
+ * Date 型と文字列が混在するのはこのため。Date 型を v.getTime()（ミリ秒）のまま使うと桁が
+ * 文字列側の YYYYMMDD と全く異なり、Date 型の行が実際の日付と無関係に必ず最新扱いになって
+ * ソートが壊れる。年月日を取り出して文字列側と同じ YYYYMMDD 形式に揃える。
+ */
+function dateSortKey_(v) {
+  if (v instanceof Date) return v.getFullYear() * 10000 + (v.getMonth() + 1) * 100 + v.getDate();
+  var s = String(v || "").trim();
+  if (!s) return -1;
+  var m = /(\d{4})[\/\-.]?(\d{1,2})?[\/\-.]?(\d{1,2})?/.exec(s);
+  if (!m) return -1;
+  var y = +m[1], mo = m[2] ? +m[2] : 1, d = m[3] ? +m[3] : 1;
+  return y * 10000 + mo * 100 + d;
+}
+
+/** Date 型セルを "yyyy/MM/dd" の文字列へ、文字列セルはそのまま返す。 */
+function dateDisplayString_(v) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone() || "Asia/Tokyo", "yyyy/MM/dd");
+  }
+  return v;
+}
+
+/**
+ * 1 タブのデータ行を date 列で新しい→古いに並び替える（date 列が無ければ何もしない）。
+ *
+ * 並び替え前に date 列をプレーンテキスト書式へ統一し、値も文字列へ正規化して書き戻す。
+ * そうしないと、並び替えで行の内容だけが移動してもセルの書式（Date型／テキスト）は
+ * 元の位置に残るため、Date 型だった位置に日付なしの行が来ると 1899 年起点のシリアル値
+ * として誤解釈され、1900年前後のあり得ない日付が表示されるバグになる。
+ */
+function sortSheetByDate_(sh) {
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var dateCol = -1;
+  for (var i = 0; i < header.length; i++) {
+    if (String(header[i]).trim() === "date") { dateCol = i; break; }
+  }
+  if (dateCol < 0) return;
+  var maxRows = sh.getMaxRows();
+  if (maxRows >= 2) sh.getRange(2, dateCol + 1, maxRows - 1, 1).setNumberFormat("@");
+  var last = sh.getLastRow();
+  if (last < 2) return;
+  var dateRange = sh.getRange(2, dateCol + 1, last - 1, 1);
+  var dateVals = dateRange.getValues().map(function (r) { return [dateDisplayString_(r[0])]; });
+  dateRange.setValues(dateVals);
+  if (last < 3) return;
+  var range = sh.getRange(2, 1, last - 1, sh.getLastColumn());
+  var data = range.getValues();
+  var order = data.map(function (_, i) { return i; });
+  order.sort(function (a, b) { return dateSortKey_(data[b][dateCol]) - dateSortKey_(data[a][dateCol]); });
+  range.setValues(order.map(function (i) { return data[i]; }));
+}
+
 /** 1-based 列番号 → A1 列文字。 */
 function colLetter_(n) {
   var s = "";
@@ -569,37 +699,72 @@ function protectMetaAllTabs() {
 }
 
 var PROTECT_TAG = "業績DB:lock";  // 当スクリプトが付けた保護の目印（再設定時に作り直す）。
+var FULL_PROTECT_TAG = "業績DB:fulllock";  // 「メンバー編集を無効化」時の全列ロックの目印。
 
-/** 1 タブのヘッダ行＋メタ各列を保護する（既存の当スクリプト保護は作り直す）。 */
+/** 1 タブのヘッダ行＋メタ各列を保護する（既存の当スクリプト保護・全列ロックは作り直す）。 */
 function protectSheetMeta_(sh, me) {
   sh.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (p) {
-    if (p.getDescription() === PROTECT_TAG) p.remove();
+    if (p.getDescription() === PROTECT_TAG || p.getDescription() === FULL_PROTECT_TAG) p.remove();
   });
   var maxRows = sh.getMaxRows();
   var lastCol = sh.getLastColumn();
   if (lastCol < 1) return;
   // ヘッダ行（列名）を保護。
-  protectRange_(sh.getRange(1, 1, 1, lastCol), me);
+  protectRange_(sh.getRange(1, 1, 1, lastCol), me, PROTECT_TAG);
   // メタ列を（将来追記される行も含め）列全体で保護。
   var header = sh.getRange(1, 1, 1, lastCol).getValues()[0];
   META_FIELDS_LOCK.forEach(function (name) {
     for (var i = 0; i < header.length; i++) {
       if (String(header[i]).trim() === name && maxRows >= 2) {
-        protectRange_(sh.getRange(2, i + 1, maxRows - 1, 1), me);
+        protectRange_(sh.getRange(2, i + 1, maxRows - 1, 1), me, PROTECT_TAG);
       }
     }
   });
 }
 
-/** 範囲を保護し、編集者を me のみにする。 */
-function protectRange_(range, me) {
-  var p = range.protect().setDescription(PROTECT_TAG);
+/** 範囲を保護し、編集者を me（＋ADMIN_EDITORS）のみにする。 */
+function protectRange_(range, me, tag) {
+  var p = range.protect().setDescription(tag || PROTECT_TAG);
   p.removeEditors(p.getEditors());
   if (p.canDomainEdit()) p.setDomainEdition(false);
   p.addEditor(me);
   // 管理者（チェック担当）も保護範囲を編集できるようにする。未共有のアドレスは無視。
   ADMIN_EDITORS.forEach(function (email) {
     try { p.addEditor(email); } catch (e) {}
+  });
+}
+
+/** メニュー: 全 record タブを全列オーナーのみ編集可に戻し、編集→未確認トリガを止める。 */
+function disableMemberEditing() {
+  removeEditRevertTrigger_();
+  fullProtectAllTabs();
+  toast_("メンバー編集を無効化しました（全列をオーナーのみ編集可に戻しました）");
+}
+
+/** 全 record タブのヘッダ〜データ列まで全体を保護（編集はオーナーのみ）。 */
+function fullProtectAllTabs() {
+  var ss = SpreadsheetApp.getActive();
+  var me = Session.getEffectiveUser();
+  recordSheets_(ss).forEach(function (sh) {
+    protectSheetFull_(sh, me);
+  });
+}
+
+/** 1 タブの全範囲（ヘッダ〜データ列）を保護する（既存の当スクリプト保護は作り直す）。 */
+function protectSheetFull_(sh, me) {
+  sh.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (p) {
+    if (p.getDescription() === PROTECT_TAG || p.getDescription() === FULL_PROTECT_TAG) p.remove();
+  });
+  var maxRows = sh.getMaxRows();
+  var lastCol = sh.getLastColumn();
+  if (lastCol < 1) return;
+  protectRange_(sh.getRange(1, 1, maxRows, lastCol), me, FULL_PROTECT_TAG);
+}
+
+/** installable onEdit トリガ（onEditRevert）を削除する。 */
+function removeEditRevertTrigger_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "onEditRevert") ScriptApp.deleteTrigger(t);
   });
 }
 
@@ -647,6 +812,46 @@ function onEditRevert(e) {
       }
     }
   }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  週次バックアップ
+// ════════════════════════════════════════════════════════════════
+// 毎週月曜 AM3 時ごろ、Canonical スプレッドシート自体を Drive 上の backups
+// フォルダ（Canonical と同じ親フォルダ内）へコピー保存する。世代は削除せず
+// 無期限に蓄積する（容量が気になる場合は手動で古いコピーを削除する運用）。
+
+var BACKUP_TRIGGER_FN = "backupCanonical";
+var BACKUP_FOLDER_NAME = "backups";
+
+/** メニュー: 週次バックアップ用のトリガを設置する（再実行しても重複登録しない）。 */
+function setupWeeklyBackup() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === BACKUP_TRIGGER_FN) ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger(BACKUP_TRIGGER_FN)
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(3)
+    .create();
+  toast_("週次バックアップを設定しました（毎週月曜 AM3 時ごろに実行）");
+}
+
+/** 時間主導トリガから呼ばれる: Canonical を backups フォルダへコピー保存。 */
+function backupCanonical() {
+  var ss = SpreadsheetApp.getActive();
+  var file = DriveApp.getFileById(ss.getId());
+  var parents = file.getParents();
+  var parent = parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+  var folder = getOrCreateBackupFolder_(parent);
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "Asia/Tokyo", "yyyyMMdd");
+  file.makeCopy("業績DB_backup_" + stamp, folder);
+}
+
+/** 親フォルダ直下の backups フォルダを取得（無ければ作成）。 */
+function getOrCreateBackupFolder_(parent) {
+  var it = parent.getFoldersByName(BACKUP_FOLDER_NAME);
+  return it.hasNext() ? it.next() : parent.createFolder(BACKUP_FOLDER_NAME);
 }
 
 // ── 共通ヘルパ ───────────────────────────────────────────────
@@ -703,6 +908,21 @@ function fetchCrossref_(doi) {
   }
 }
 
+/** CrossRef のページ。電子ジャーナル（Sci Rep 等）は page が無く article-number に論文番号が入る。 */
+function crossrefPages_(msg) {
+  return msg.page || msg["article-number"] || "";
+}
+
+// 巻・号・ページは「12-20」等が日付・数値に自動変換されないよう書式なしテキストで書き込む。
+var TEXT_FORMAT_FIELDS = ["volume", "issue", "pages"];
+
+/** シート行 r の巻・号・ページ列を書式なしテキスト（@）にする。setValues の前に呼ぶ。 */
+function setTextFormatForRow_(sh, r, col) {
+  TEXT_FORMAT_FIELDS.forEach(function (name) {
+    if (col[name] != null) sh.getRange(r, col[name] + 1).setNumberFormat("@");
+  });
+}
+
 /** CrossRef メッセージで row の空セルを埋める。埋めたら true。 */
 function fillRowFromCrossref_(row, col, type, msg) {
   function first(a) { return (a && a.length) ? a[0] : ""; }
@@ -718,7 +938,7 @@ function fillRowFromCrossref_(row, col, type, msg) {
   setIfEmpty("journal_abbr_en", first(msg["short-container-title"]));
   setIfEmpty("volume", msg.volume || "");
   setIfEmpty("issue", msg.issue || "");
-  setIfEmpty("pages", msg.page || "");
+  setIfEmpty("pages", crossrefPages_(msg));
   var dp = msg["published-print"] || msg["published-online"] || msg["issued"];
   if (dp && dp["date-parts"] && dp["date-parts"][0]) {
     var p = dp["date-parts"][0];

@@ -584,7 +584,26 @@ function appendOne_(ss, type, values, reporter, source) {
     if (key in meta) return meta[key];
     return (key in values) ? values[key] : "";
   });
+  setTextFormatBelowData_(sheet, header);
   sheet.appendRow(row);
+}
+
+// 巻・号・ページは「12-20」等が日付・数値に自動変換されないよう書式なしテキストで書き込む。
+var TEXT_FORMAT_FIELDS = ["volume", "issue", "pages"];
+
+/**
+ * データ末尾より下の空き行の巻・号・ページ列を書式なしテキスト（@）にする（appendRow の前に呼ぶ）。
+ * 既存データ行の書式には触れない。空き行が無ければ 1 行足して、追記先の行を必ず含める。
+ */
+function setTextFormatBelowData_(sheet, header) {
+  var lastRow = sheet.getLastRow();
+  if (sheet.getMaxRows() <= lastRow) sheet.insertRowsAfter(sheet.getMaxRows(), 1);
+  var numRows = sheet.getMaxRows() - lastRow;
+  header.forEach(function (h, i) {
+    if (TEXT_FORMAT_FIELDS.indexOf(String(h).trim()) >= 0) {
+      sheet.getRange(lastRow + 1, i + 1, numRows, 1).setNumberFormat("@");
+    }
+  });
 }
 
 /** 日付を 年/月（YYYY/MM）へ正規化（2025/7・2025-07-01・2025年7月 を吸収）。 */
@@ -973,7 +992,8 @@ function enrichFromDoi_(type, values) {
   setIfEmpty("journal_abbr_en", first(msg["short-container-title"]));
   setIfEmpty("volume", msg.volume || "");
   setIfEmpty("issue", msg.issue || "");
-  setIfEmpty("pages", msg.page || "");
+  // 電子ジャーナル（Sci Rep 等）は page が無く article-number に論文番号が入る。
+  setIfEmpty("pages", msg.page || msg["article-number"] || "");
   var dp = msg["published-print"] || msg["published-online"] || msg["issued"];
   if (dp && dp["date-parts"] && dp["date-parts"][0]) {
     var p = dp["date-parts"][0];
