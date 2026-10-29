@@ -17,11 +17,14 @@ from rapidfuzz import fuzz
 # 名簿セル例: "宮崎 慎一  MIYAZAKI, Shinichi"
 _ROSTER_RE = re.compile(r"^(?P<ja>.+?)\s{2,}(?P<last>[A-Za-z'’\-]+),\s*(?P<first>.+)$")
 
-# 著者トークンから除去する注記（Co-first author 等）。
-_ANNOTATION_RE = re.compile(r"\(\s*\*?\s*(co-first|co-corresponding|corresponding|equal)[^)]*\)", re.I)
+# 著者トークンから除去する注記（Co-first author・(監修) 等）。全角括弧も対象。
+_ANNOTATION_RE = re.compile(
+    r"[(（]\s*\*?\s*(co-first|co-corresponding|corresponding|equal|監修|編|責任著者)[^)）]*[)）]", re.I
+)
 
-# 著者区切り（カンマ・セミコロン・& ・語境界の and）。
-_AUTHOR_SEP_RE = re.compile(r"\s*[;,]\s*|\s+and\s+|\s*&\s*", re.I)
+# 著者区切り（半角/全角のカンマ・セミコロン、和文の読点、& 、語境界の and）。
+# 読点「、」が無いと和文の著者欄全体が 1 トークンになり、誰とも一致しない。
+_AUTHOR_SEP_RE = re.compile(r"\s*[;,；，、]\s*|\s+and\s+|\s*&\s*", re.I)
 
 # 著者リスト末尾の省略表記（et al. / ほかN名 / 他）。分割前に除去する。
 _ETAL_TAIL_RE = re.compile(r"[,，、]?\s*(et\s*al\.?|ほか.*|他\s*\d*\s*名?)\s*$", re.I)

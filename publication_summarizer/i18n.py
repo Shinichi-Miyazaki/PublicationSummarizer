@@ -43,8 +43,12 @@ STRINGS: dict[str, tuple[str, str]] = {
     "type_label": ("業績種別", "Record types"),
     "author_loose_label": ("著者名の一致のゆるさ", "Author name match looseness"),
     "author_loose_help": (
-        "高いほど厳密（同名でも別人扱いしやすい）、低いほどゆるく拾います。通常は既定のままでOK。",
-        "Higher = stricter; lower = looser matching. The default is usually fine.",
+        "表記ゆれ救済（姓が一致しない著者だけに使う類似度）のしきい値。下げると別人を拾いやすくなります"
+        "（例: 75 未満で Takashi Saito を別メンバーと誤認）。通常は既定の 85 のままで OK。"
+        "出てこない業績は、名簿のローマ字（姓・名の順）を確認してください。",
+        "Similarity threshold used only when the surname does not match. Lowering it picks up other people"
+        " (e.g. below 75, unrelated names start to match). Keep the default 85; if a record is missing,"
+        " check the roster's romanized name (LAST, First).",
     ),
     "author_label": ("著者（未選択＝全員）", "Author (none = everyone)"),
     "author_help": (

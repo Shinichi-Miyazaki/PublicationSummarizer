@@ -123,6 +123,12 @@ def unit_tests() -> None:
     check("and を含む姓を割らない", split_authors("Anderson J, Bond K") == ["Anderson J", "Bond K"])
     check("発表者の丸印を除去", split_authors("○山田 太郎, 林 直子") == ["山田 太郎", "林 直子"])
     check("丸印＋空白も除去", split_authors("◯ 山田 太郎, 〇林 直子") == ["山田 太郎", "林 直子"])
+    check("和文の読点で区切る", split_authors("金子杏美、柏木光昭、林直子") == ["金子杏美", "柏木光昭", "林直子"])
+    check("全角カンマ・セミコロンで区切る", split_authors("金子杏美，林直子；宮崎慎一") == ["金子杏美", "林直子", "宮崎慎一"])
+    check("(監修) 注記を除去", split_authors("林 直子 (監修)") == ["林 直子"])
+    check("全角括弧の（編）も除去", split_authors("林 直子（編）、宮崎 慎一") == ["林 直子", "宮崎 慎一"])
+    check("読点区切りの和文著者欄でメンバー一致",
+          m.record_has_member("金子杏美、柏木光昭、林直子", hayashi))
 
 
 def author_style_tests() -> None:
